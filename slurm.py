@@ -1,5 +1,6 @@
 import os
 import yaml
+from src.cfg.constants import *
 
 
 class RuntimeConfig:
@@ -19,7 +20,7 @@ class RuntimeConfig:
             "LLMGE_SEED_NETWORK",
             os.path.join(self.SOTA_ROOT, "model.py"),
         )
-        self.PORT = int(os.getenv("LLMGE_PORT", "8137"))
+        self.PORT = int(os.getenv("LLMGE_PORT", str(PORT)))
 
 
 CONFIG = RuntimeConfig()
