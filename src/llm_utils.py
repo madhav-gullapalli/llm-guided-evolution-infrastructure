@@ -23,6 +23,8 @@ from transformers import AutoTokenizer
 from google import genai
 from google.genai import types
 
+LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "900"))
+
 def retrieve_base_code(idx):
     """Retrieves base code for quality control."""
     base_network = SEED_NETWORK
@@ -110,7 +112,7 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
             temp = qc_func(code_from_llm, base_code, generate_text)
             counter += 1
         
-        if temp != "NC" or temp != "OOT" or temp != "MS":
+        if temp not in ["NC", "OOT", "MS", "ERROR"]:
             return base_code
 
     else:
@@ -536,7 +538,7 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
     server_url = f"http://{llm_hostname}:{PORT}/generate"
     
     try:
-        response = requests.post(server_url, headers=headers, json=payload)
+        response = requests.post(server_url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")
@@ -549,6 +551,9 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
             print(f"Error: {response.status_code}")
             print(response.text)
             return None
+    except requests.exceptions.Timeout:
+        print(f"Request timed out after {LLM_REQUEST_TIMEOUT}s: {server_url}")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
         return None
@@ -567,7 +572,7 @@ def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature
     headers = {"Content-Type": "application/json"}
     
     try:
-        response = requests.post(server_url, headers=headers, json=payload)
+        response = requests.post(server_url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")
@@ -580,6 +585,9 @@ def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature
             print(f"Error: {response.status_code}")
             print(response.text)
             return None
+    except requests.exceptions.Timeout:
+        print(f"Request timed out after {LLM_REQUEST_TIMEOUT}s: {server_url}")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
         return None

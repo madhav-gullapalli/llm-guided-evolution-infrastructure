@@ -15,4 +15,4 @@ module load cuda
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 
 # Run Python script
-uv run python run_improved.py --checkpoints titanic_islands_run/island_llama3_titanic-roleplay --global_path titanic_islands_run/global_data --llm_model llama3 --prompt_group titanic/roleplay
+uv run python run_improved.py --checkpoints titanic_islands_run/island_llama3_naslib-ranking --global_path titanic_islands_run/global_data --llm_model llama3 --prompt_group naslib/ranking

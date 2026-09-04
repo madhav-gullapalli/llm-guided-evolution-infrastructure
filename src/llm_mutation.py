@@ -43,7 +43,8 @@ def augment_network(input_filename='network.py', output_filename='network_x.py',
                                             top_p, llm_model, temperature)
     
     if not code_from_llm:
-        code_from_llm = txt2llm
+        print("LLM generation failed; keeping the original selected code block.", flush=True)
+        code_from_llm = code2llm.strip()
 
     note_txt = extract_note(code2llm)
     parts[augment_idx] = f"\n{note_txt}{code_from_llm}\n"
