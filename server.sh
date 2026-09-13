@@ -6,6 +6,7 @@
 #SBATCH -C "H200"
 #SBATCH --mem 160G
 #SBATCH -c 16
+#SBATCH --exclude=atl1-1-03-014-16-0
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
 echo "launching LLM Server"
 
@@ -35,4 +36,4 @@ echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT)"
 echo "Submitting island controller (count=$COUNT)"
 sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"
 
-uv run uvicorn server:app --host $SERVER_HOSTNAME --port 8137 --workers 1
+uv run uvicorn server:app --host $SERVER_HOSTNAME --port 12676 --workers 1

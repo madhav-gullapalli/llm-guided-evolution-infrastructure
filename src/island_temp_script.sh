@@ -6,6 +6,7 @@
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
+#SBATCH --exclude=atl1-1-03-014-16-0
 cd $SLURM_SUBMIT_DIR
 echo "launching AIsurBL"
 echo "Started on `/bin/hostname`"

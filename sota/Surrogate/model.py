@@ -1,10 +1,10 @@
-# --OPTION--
 import time
 
 from naslib.predictors.mlp import MLPPredictor
 from naslib.predictors.trees.xgb import XGBoost
 
 
+# --OPTION--
 DEFAULT_SURROGATE_CONFIG = {
     "name": "xgboost",
     "embedding_col": "codellama_python_7b_pytorch_code_exclude_helper_embedding",
@@ -29,6 +29,8 @@ def get_surrogate_config(base_cfg=None, **runtime_constants):
     cfg.update({key: value for key, value in runtime_constants.items() if value is not None})
     return cfg
 
+
+# --OPTION--
 class CustomXGBoost(XGBoost):
     def __init__(self, **kwargs):
         base_valid_args = [
@@ -61,82 +63,8 @@ class CustomXGBoost(XGBoost):
         print(f"[CustomXGBoost] Training completed in {time.time() - start:.2f} seconds.")
         return result
 
-SURROGATE_REGISTRY = {
-    "xgboost": CustomXGBoost
-}
-
-
-def build_predictor_kwargs(cfg):
-    name = cfg["name"]
-    if name not in SURROGATE_REGISTRY:
-        raise ValueError(f"Unknown surrogate: {name}")
-    if "corpus_path" not in cfg:
-        raise ValueError("Missing required runtime config: corpus_path")
-
-    predictor_kwargs = {
-        "base_predictor_cls": SURROGATE_REGISTRY[name],
-        "corpus_path": cfg["corpus_path"],
-        "embedding_col": cfg["embedding_col"],
-        "use_pca": cfg["use_pca"],
-        "pca_components": cfg["pca_components"],
-    }
-
-    if name == "xgboost":
-        predictor_kwargs.update(
-            {
-                "ss_type": cfg["ss_type"],
-                "hparams_from_file": cfg["hparams_from_file"],
-                "nthread": cfg["nthread"],
-                "device": cfg["device"],
-                "tree_method": cfg["tree_method"],
-            }
-        )
-    elif name == "mlp":
-        predictor_kwargs.update(
-            {
-                "num_layers": cfg["num_layers"],
-                "layer_width": cfg["layer_width"],
-                "batch_size": cfg["batch_size"],
-                "lr": cfg["lr"],
-                "epochs": cfg["epochs"],
-                "loss": cfg["loss"],
-            }
-        )
-
-    return predictor_kwargs
 
 # --OPTION--
-import time
-
-from naslib.predictors.mlp import MLPPredictor
-from naslib.predictors.trees.xgb import XGBoost
-
-
-DEFAULT_SURROGATE_CONFIG = {
-    "name": "mlp",
-    "embedding_col": "codellama_python_7b_pytorch_code_exclude_helper_embedding",
-    "use_pca": False,
-    "pca_components": 128,
-    "ss_type": "nasbench201",
-    "hparams_from_file": False,
-    "nthread": 4,
-    "device": "cuda",
-    "tree_method": "hist",
-    "num_layers": 3,
-    "layer_width": 128,
-    "batch_size": 32,
-    "lr": 1e-3,
-    "epochs": 200,
-    "loss": "mse",
-}
-
-
-def get_surrogate_config(base_cfg=None, **runtime_constants):
-    cfg = DEFAULT_SURROGATE_CONFIG.copy() if base_cfg is None else base_cfg.copy()
-    cfg.update({key: value for key, value in runtime_constants.items() if value is not None})
-    return cfg
-
-
 class CustomMLP(MLPPredictor):
     def __init__(self, **kwargs):
         base_valid_args = [
@@ -176,8 +104,30 @@ class CustomMLP(MLPPredictor):
         print(f"[CustomMLP] Training completed in {time.time() - start:.2f} seconds.")
         return result
 
+
+# --OPTION--
 SURROGATE_REGISTRY = {
+    "xgboost": CustomXGBoost,
     "mlp": CustomMLP,
+}
+
+
+PREDICTOR_KWARG_KEYS = {
+    "xgboost": (
+        "ss_type",
+        "hparams_from_file",
+        "nthread",
+        "device",
+        "tree_method",
+    ),
+    "mlp": (
+        "num_layers",
+        "layer_width",
+        "batch_size",
+        "lr",
+        "epochs",
+        "loss",
+    ),
 }
 
 
@@ -195,27 +145,5 @@ def build_predictor_kwargs(cfg):
         "use_pca": cfg["use_pca"],
         "pca_components": cfg["pca_components"],
     }
-
-    if name == "xgboost":
-        predictor_kwargs.update(
-            {
-                "ss_type": cfg["ss_type"],
-                "hparams_from_file": cfg["hparams_from_file"],
-                "nthread": cfg["nthread"],
-                "device": cfg["device"],
-                "tree_method": cfg["tree_method"],
-            }
-        )
-    elif name == "mlp":
-        predictor_kwargs.update(
-            {
-                "num_layers": cfg["num_layers"],
-                "layer_width": cfg["layer_width"],
-                "batch_size": cfg["batch_size"],
-                "lr": cfg["lr"],
-                "epochs": cfg["epochs"],
-                "loss": cfg["loss"],
-            }
-        )
-
+    predictor_kwargs.update({key: cfg[key] for key in PREDICTOR_KWARG_KEYS[name]})
     return predictor_kwargs

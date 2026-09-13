@@ -39,8 +39,18 @@ def augment_network(input_filename_x, input_filename_y, output_filename,
     # Split the input files
     parts_x = split_file(input_filename_x)
     parts_y = split_file(input_filename_y)
+    if len(parts_x) == 1:
+        parts_x = ["", parts_x[0]]
+    if len(parts_y) == 1:
+        parts_y = ["", parts_y[0]]
     # Create tuples of parts to be augmented
-    parts = [(x, y, idx) for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]))]
+    parts = [
+        (x, y, idx)
+        for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]), start=1)
+        if x.strip() and y.strip()
+    ]
+    if not parts:
+        raise ValueError(f"No editable code blocks found in {input_filename_x} and {input_filename_y}")
     random.shuffle(parts)
     # Find differing parts
     for x, y, augment_idx in parts:

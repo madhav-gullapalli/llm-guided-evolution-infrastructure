@@ -142,6 +142,8 @@ def split_file(filename):
     # Regular expression for the pattern
     pattern = r"# --OPTION--"
     parts = re.split(pattern, content)
+    if len(parts) == 1:
+        parts = ["", content]
 
     return parts
 

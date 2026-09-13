@@ -5,12 +5,14 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import threading
 import asyncio
+import os
 from src.cfg.constants import *
 
 app = FastAPI(title="LLM API", version="1.0")
 
-BATCH_SIZE = 8  # num of LLM requests to process at once
-BATCH_WAIT_TIME = 2  # max wait time for batch to fill in s
+# Keep the fork's batching policy configurable while retaining its defaults.
+BATCH_SIZE = int(os.getenv("LLM_SERVER_BATCH_SIZE", "8"))  # num of LLM requests to process at once
+BATCH_WAIT_TIME = float(os.getenv("LLM_SERVER_BATCH_WAIT_TIME", "2"))  # max wait time for batch to fill in s
 
 class LLMRequest(BaseModel):
     prompt: str
@@ -75,6 +77,8 @@ class LLMModel:
         self.request_queue = asyncio.Queue() # queue for holding requests to process
         self.batch_task = None # current task
         self.batch_lock = asyncio.Lock() # lock for
+        self.batch_id = 0
+        self.request_id = 0
         self.is_processing = False # current state
         print("ready to go")
     
@@ -112,19 +116,26 @@ class LLMModel:
                             break
                     
                     batch_size = len(batch)
-                    print(f"Processing batch of {batch_size} requests")
+                    self.batch_id += 1
+                    batch_id = self.batch_id
+                    max_new_tokens = max(req["max_new_tokens"] for req in batch)
+                    temperature = batch[0]["temperature"]
+                    top_p = batch[0]["top_p"]
+                    print(
+                        f"Processing batch {batch_id} of {batch_size} requests "
+                        f"(queued after collect: {self.request_queue.qsize()}, "
+                        f"max_new_tokens={max_new_tokens}, temperature={temperature}, top_p={top_p})",
+                        flush=True,
+                    )
                     
                     prompts = [req["prompt"] for req in batch]
                     
-                    max_new_tokens = max(req["max_new_tokens"] for req in batch)
-                    
-                    # all temps and top_p are same
-                    temperature = batch[0]["temperature"] 
-                    top_p = batch[0]["top_p"]
-                    
                     start_time = time.time()
                     
-                    results = self.pipeline(
+                    # The pipeline is synchronous and can run for minutes.  Keep it
+                    # off FastAPI's event loop so new requests can join the queue.
+                    results = await asyncio.to_thread(
+                        self.pipeline,
                         prompts, 
                         max_new_tokens=max_new_tokens,
                         temperature=temperature,
@@ -132,9 +143,14 @@ class LLMModel:
                     )
                     
                     response_time = round(time.time() - start_time, 2)
+                    print(
+                        f"Finished batch {batch_id} in {response_time}s "
+                        f"(queued after finish: {self.request_queue.qsize()})",
+                        flush=True,
+                    )
                     
                     # for every future, set its result
-                    for result, future in zip(results, futures):
+                    for request, result, future in zip(batch, results, futures):
                         output_txt = result[0].get("generated_text", str(result))
                         
                         future.set_result({
@@ -142,6 +158,11 @@ class LLMModel:
                             "response_time_sec": response_time,
                             "batch_size": batch_size
                         })
+                        print(
+                            f"Request {request.get('request_id', '?')} completed "
+                            f"(batch={batch_id}, total_wait={time.time() - request.get('queued_at', time.time()):.2f}s)",
+                            flush=True,
+                        )
                         
                         # done with task
                         self.request_queue.task_done()
@@ -172,11 +193,15 @@ class LLMModel:
         """Submit a request to the batch processor"""
         # future is a placeholder for later result
         future = asyncio.Future()
-        
-        # put in queue
-        print('Hey I am about to access the request queue attribute')
+        self.request_id += 1
+        request_dict["request_id"] = self.request_id
+        request_dict["queued_at"] = time.time()
         await self.request_queue.put((request_dict, future))
-        print('No problem, I got it')
+        print(
+            f"Request {request_dict['request_id']} queued "
+            f"(queue size: {self.request_queue.qsize()})",
+            flush=True,
+        )
         
         # start processing batches if not already started
         await self.start_batch_processor()
@@ -210,7 +235,6 @@ async def generate_text(request: LLMRequest):
         
         # Get the model instance
         model = LLMModel()
-        print(dir(model))
         
         # Submit to the batch processor and wait for result
         start_time = time.time()

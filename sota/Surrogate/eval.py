@@ -570,8 +570,6 @@ if not RUN_BASELINES or RUN_ALL:
         predictor_kwargs=_model_module.build_predictor_kwargs(surrogate_config),
     )
 
-    runtime = time.time() - start_time
-
     # run_experiment saves surrogate metrics to a JSON inside config.out_dir
     import glob as _glob
     metrics_files = sorted(_glob.glob(f"{config.out_dir}/**/surrogate_metrics_*.json", recursive=True))
@@ -590,10 +588,9 @@ if not RUN_BASELINES or RUN_ALL:
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
-        _f.write(f"{final_kendall_tau},{final_mse},{runtime}")
+        _f.write(f"{final_kendall_tau},{final_mse}")
 
     print(f"Results written to {filename}")
     print(f"  Kendall Tau: {final_kendall_tau:.4f}")
     print(f"  MSE:         {final_mse:.6f}")
-    print(f"  Runtime (s): {runtime:.1f}")
     print('=' * 120); print('job done'); print('=' * 120)

@@ -537,7 +537,7 @@ def check4results(gene_id):
         results = results.split(',')
         fitness = [float(r.strip()) for r in results]
         # TODO: get all features later
-        fitness = [fitness[0], fitness[1], fitness[2]]
+        fitness = fitness[:len(FITNESS_WEIGHTS)]
         fitness = tuple(fitness)
         
         GLOBAL_DATA[gene_id]['status'] = 'completed'
@@ -662,7 +662,7 @@ def update_individual(ind, new_gene_id, old_gene_id=None, process_success=True, 
 # TODO: I need to cycle through by the job id to match the sub order
 def delayed_mate_check(offspring):
     if DELAYED_CHECK is True:
-        for individual in offspring:
+        for i, individual in enumerate(offspring):
             k = individual[0]
             if k in GLOBAL_DATA and GLOBAL_DATA[k]["status"] == "DELAYED_CHECK":
                 GLOBAL_DATA[k]["status"]="subbed file"
@@ -684,8 +684,8 @@ def delayed_mate_check(offspring):
                 else:
                     new_gene_id = k
                     old_gene_id = LINKED_GENES[k]
-                individual = update_individual(individual, new_gene_id, old_gene_id=old_gene_id, 
-                                               process_success=not failed_process, process_type='Mating')
+                offspring[i] = update_individual(individual, new_gene_id, old_gene_id=old_gene_id, 
+                                                 process_success=not failed_process, process_type='Mating')
 
     return offspring
 
@@ -719,7 +719,7 @@ def delayed_mutate_check(offspring):
         Updated list of offspring
     """
     if DELAYED_CHECK is True:
-        for individual in offspring:
+        for i, individual in enumerate(offspring):
             k = individual[0]
             if k in GLOBAL_DATA and GLOBAL_DATA[k]["status"] == "DELAYED_CHECK":
                 GLOBAL_DATA[k]["status"]="subbed file"
@@ -737,8 +737,8 @@ def delayed_mutate_check(offspring):
 
                     failed_process = not (successful_sub_flag and job_done)
                     old_gene_id = LINKED_GENES[k]
-                    individual = update_individual(individual, new_gene_id, old_gene_id=old_gene_id,
-                                                   process_success=not failed_process, process_type='Mutation')
+                    offspring[i] = update_individual(individual, new_gene_id, old_gene_id=old_gene_id,
+                                                     process_success=not failed_process, process_type='Mutation')
                   
     return offspring
 
@@ -1126,11 +1126,12 @@ if __name__ == "__main__":
 
         # Apply crossover on the offspring
         box_print("Mating", print_bbox_len=60, new_line_end=False)
-        for child1, child2 in zip(offspring[::2], offspring[1::2]):
+        for i in range(0, len(offspring) - 1, 2):
+            child1, child2 = offspring[i], offspring[i + 1]
             if random.random() < crossover_probability:
-                child1, child2 = toolbox.mate(child1, child2, llm_model=llm_model)
-                del child1.fitness.values
-                del child2.fitness.values 
+                offspring[i], offspring[i + 1] = toolbox.mate(child1, child2, llm_model=llm_model)
+                del offspring[i].fitness.values
+                del offspring[i + 1].fitness.values 
                 
         box_print("Batch Checking Mated Genes", print_bbox_len=60, new_line_end=False)       
         offspring = delayed_mate_check(offspring)
@@ -1138,10 +1139,10 @@ if __name__ == "__main__":
         
         # Apply mutation on the offspring
         box_print("Mutating", print_bbox_len=60, new_line_end=False)
-        for mutant in offspring:
+        for i, mutant in enumerate(offspring):
             if random.random() < mutation_probability:
-                toolbox.mutate(individual=mutant, llm_model=llm_model)
-                del mutant.fitness.values
+                offspring[i] = toolbox.mutate(individual=mutant, llm_model=llm_model)
+                del offspring[i].fitness.values
                 
         box_print(f"GLOBAL_DATA_ANCESTRY", new_line_end=False)
         print_ancestry(GLOBAL_DATA_ANCESTRY)

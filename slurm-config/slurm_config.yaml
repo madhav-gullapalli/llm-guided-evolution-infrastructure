@@ -15,6 +15,8 @@ islands_bash_script: '#!/bin/bash
 
     #SBATCH -C intel
 
+    #SBATCH --exclude=atl1-1-03-014-16-0
+
     cd $SLURM_SUBMIT_DIR
 
     echo "launching AIsurBL"
@@ -45,6 +47,8 @@ llm_bash_script: '#!/bin/bash
     #SBATCH -c 2
 
     #SBATCH -N 1
+
+    #SBATCH --exclude=atl1-1-03-014-16-0
 
     #SBATCH --output=run_job_outputs/evolution/slurm-%j.out
 
@@ -86,6 +90,8 @@ python_bash_script: '#!/bin/bash
     #SBATCH -c 12
 
     #SBATCH -N 1
+
+    #SBATCH --exclude=atl1-1-03-014-16-0
 
     #SBATCH --output=run_job_outputs/evaluation/slurm-%j.out
 

@@ -6,6 +6,7 @@
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
+#SBATCH --exclude=atl1-1-03-014-16-0
 # Island controller arguments:
 # $1 (COUNT): Number of remaining restart iterations
 # $2 (PREV_SERVER_JOB_ID): Job ID of the currently-running server (to cancel)
@@ -23,13 +24,13 @@ module load cuda
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 
 # Change to the repository root
-cd /home/hice1/<username>/scratch/llm-guided-evolution-infrastructure
+cd /home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure
 
-# Starts running Island Migration with 3 islands (same LLM, three prompt groups)
+# Starts running Island Migration with 3 surrogate-prompt islands
 uv run python islands_wrapper.py titanic_islands_run \
     --num_islands 3 \
     --llms llama3 \
-    --prompt_groups "titanic/focused,titanic/general,titanic/roleplay"
+    --prompt_groups "naslib/efficiency,naslib/general,naslib/ranking"
 
 if (( COUNT > 1 )); then
     NEXT_COUNT=$((COUNT - 1))

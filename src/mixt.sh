@@ -5,6 +5,7 @@
 #SBATCH -C "H200"
 #SBATCH --mem 10G
 #SBATCH -c 48
+#SBATCH --exclude=atl1-1-03-014-16-0
 echo "Launching AIsurBL"
 hostname
 module load gcc/13.2.0
