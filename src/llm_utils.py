@@ -31,15 +31,23 @@ def retrieve_base_code(idx):
     return split_file(base_network)[1:][idx].strip()
 
 def clean_code_from_llm(code_from_llm):
-    """Cleans the code received from LLM."""
-    try:
-        # Extract and clean code assuming it is enclosed in triple backticks
-        return '\n'.join(code_from_llm.strip().split("```")[1].split('\n')[1:]).strip()
-    except (IndexError, AttributeError) as e:
-        # Print an error message if the code extraction fails
-        print("Runtime Error: No code was generated or the format is incorrect.")
-        return "ERROR"  # Return ERROR
-        #return ""
+    """Extract generated code while preserving as many usable responses as possible."""
+    if not isinstance(code_from_llm, str):
+        return ""
+    # Accept multiple fenced blocks but keep only one candidate.  Selecting
+    # the longest block favors the complete implementation and avoids
+    # accidentally combining repeated or contradictory code.
+    blocks = re.findall(r"```[^\n]*\n?(.*?)```", code_from_llm,
+                       flags=re.DOTALL)
+    if blocks:
+        non_empty_blocks = [block.strip() for block in blocks if block.strip()]
+        code = max(non_empty_blocks, key=len, default="")
+    else:
+        # Be permissive when the model omits Markdown fences entirely.
+        code = code_from_llm.strip()
+    if not code:
+        return ""
+    return code
 
 def get_llm_code_generator(llm_model):
     # Prefer the local uvicorn-hosted model when configured
@@ -88,26 +96,33 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
     """Generates augmented code using Mixtral."""
     print("LLM being used: ", llm_model)
     box_print("PROMPT TO LLM", print_bbox_len=60, new_line_end=False)
-    print(txt2llm, flush=True)
-    
     llm_code_generator, qc_func = get_llm_code_generator(llm_model)
+    output_contract = (
+        "\n\nWrite a thorough explanation, then immediately write the generated code EXACTLY "
+        "ONCE IN FULL based on your analysis, no other code, no repeats, no nonsense. "
+        "Put the complete generated code in exactly one Markdown Python code fence. "
+        "Do not write any other code fence or split the code into separate blocks.\n"
+    )
+    generation_prompt = txt2llm + output_contract
+    # Log the exact prompt sent to the server, including the output contract.
+    print(generation_prompt, flush=True)
     
     if apply_quality_control:
         base_code = retrieve_base_code(augment_idx)
-        code_from_llm, generate_text = llm_code_generator(txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+        code_from_llm, generate_text = llm_code_generator(generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
         temp, counter = None, 0 #default to run the quality control
         while counter < max_gen_attempts and (temp not in ["NC", "OOT", "MS", "ERROR"]): #counter to deal with stubborn 
             if temp == "NC": #regenerate based on error
                 prefix = "The code you generated did not contain a code output of the changes you mentioned. Make sure to include the altered code in your output.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "OOT":
                 prefix = "The output you gave was cut short due to a limited number of tokens. Shorten your output to just include the altered code without the explanation.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "MS":
                 prefix = "The code you generated was in multiple segments. When you output your altered code make sure it is in a single, complete code segment including the changes you made.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "ERROR": #another unforseen error
-                code_from_llm, generate_text = llm_code_generator(txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens) #just retry
+                code_from_llm, generate_text = llm_code_generator(generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens) #just retry
             
             temp = qc_func(code_from_llm, base_code, generate_text)
             counter += 1
@@ -116,7 +131,7 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
             return base_code
 
     else:
-        code_from_llm = llm_code_generator(txt2llm, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+        code_from_llm = llm_code_generator(generation_prompt, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
         box_print("TEXT FROM LLM", print_bbox_len=60, new_line_end=False)
         
         print(code_from_llm)
@@ -126,7 +141,7 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
 
     print(code_from_llm)
     
-    return code_from_llm 
+    return code_from_llm
 
 def extract_note(txt):
     """Extracts note from the part if present."""

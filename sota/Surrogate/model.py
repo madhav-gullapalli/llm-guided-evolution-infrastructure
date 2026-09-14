@@ -1,10 +1,8 @@
 import time
 
-from naslib.predictors.mlp import MLPPredictor
 from naslib.predictors.trees.xgb import XGBoost
 
 
-# --OPTION--
 DEFAULT_SURROGATE_CONFIG = {
     "name": "xgboost",
     "embedding_col": "codellama_python_7b_pytorch_code_exclude_helper_embedding",
@@ -65,50 +63,8 @@ class CustomXGBoost(XGBoost):
 
 
 # --OPTION--
-class CustomMLP(MLPPredictor):
-    def __init__(self, **kwargs):
-        base_valid_args = [
-            "encoding_type",
-            "ss_type",
-            "zc",
-            "zc_only",
-            "hpo_wrapper",
-            "hparams_from_file",
-            "config",
-        ]
-        base_args = {k: v for k, v in kwargs.items() if k in base_valid_args}
-        self.custom_hyperparams = {k: v for k, v in kwargs.items() if k not in base_valid_args}
-
-        super().__init__(**base_args)
-
-        if self.hyperparams is None:
-            self.hyperparams = self.default_hyperparams.copy()
-        self.hyperparams.update(self.custom_hyperparams)
-
-        print(f"[CustomMLP] Hyperparams set: {self.hyperparams}")
-
-    def fit(self, xtrain, ytrain, train_info=None, params=None, **kwargs):
-        start = time.time()
-        if self.hyperparams is None:
-            self.hyperparams = self.default_hyperparams.copy()
-        self.hyperparams.update(self.custom_hyperparams)
-
-        result = super().fit(
-            xtrain,
-            ytrain,
-            train_info=train_info,
-            epochs=self.hyperparams["epochs"],
-            loss=self.hyperparams["loss"],
-            **kwargs,
-        )
-        print(f"[CustomMLP] Training completed in {time.time() - start:.2f} seconds.")
-        return result
-
-
-# --OPTION--
 SURROGATE_REGISTRY = {
     "xgboost": CustomXGBoost,
-    "mlp": CustomMLP,
 }
 
 
@@ -119,14 +75,6 @@ PREDICTOR_KWARG_KEYS = {
         "nthread",
         "device",
         "tree_method",
-    ),
-    "mlp": (
-        "num_layers",
-        "layer_width",
-        "batch_size",
-        "lr",
-        "epochs",
-        "loss",
     ),
 }
 

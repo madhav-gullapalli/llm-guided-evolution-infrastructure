@@ -8,6 +8,8 @@ import random
 import pickle
 import argparse
 import subprocess
+import itertools
+import hashlib
 import yaml
 import numpy as np
 import re
@@ -89,18 +91,24 @@ def update_ancestry(gene_id_child, gene_id_parent, ancestry, mutation_type=None,
     dict
         Ancestry dictionary
     """
-    # Common part for both functionalities
-    ancestry[gene_id_child] = copy.deepcopy(ancestry[gene_id_parent])
+    # A parent can be absent after checkpoint/migration cleanup or after a
+    # failed child was removed.  Missing ancestry must not crash an island;
+    # start a valid root lineage in that case.
+    parent_ancestry = ancestry.get(
+        gene_id_parent,
+        {'GENES': [gene_id_parent], 'MUTATE_TYPE': ['ROOT']},
+    )
+    ancestry[gene_id_child] = copy.deepcopy(parent_ancestry)
     # Handle the specifics for either part 1 or part 2
     if gene_id_parent2 is None:
         # Part 1 functionality
-        ancestry[gene_id_child]['GENES'] = copy.deepcopy(ancestry[gene_id_parent]['GENES']) + [gene_id_child]
-        ancestry[gene_id_child]['MUTATE_TYPE'] = copy.deepcopy(ancestry[gene_id_parent]['MUTATE_TYPE']) + [mutation_type]
+        ancestry[gene_id_child]['GENES'] = copy.deepcopy(parent_ancestry['GENES']) + [gene_id_child]
+        ancestry[gene_id_child]['MUTATE_TYPE'] = copy.deepcopy(parent_ancestry['MUTATE_TYPE']) + [mutation_type]
     else:
         # Part 2 functionality
         cross_id = f'P:{gene_id_parent2}-C:{gene_id_child}'
-        ancestry[gene_id_child]['GENES'] = copy.deepcopy(ancestry[gene_id_parent]['GENES']) + [cross_id]
-        ancestry[gene_id_child]['MUTATE_TYPE'] = copy.deepcopy(ancestry[gene_id_parent]['MUTATE_TYPE']) + ["CrossOver"]
+        ancestry[gene_id_child]['GENES'] = copy.deepcopy(parent_ancestry['GENES']) + [cross_id]
+        ancestry[gene_id_child]['MUTATE_TYPE'] = copy.deepcopy(parent_ancestry['MUTATE_TYPE']) + ["CrossOver"]
     return ancestry
 
 def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK, ROOT_DIR, llm_model):
@@ -532,12 +540,27 @@ def check4results(gene_id):
         # The job saves the model results to a file f'{gene_id}_results.txt'
         # results_path = os.path.join(out_dir, f'{gene_id}_results.txt')
         results_path = f'{SOTA_ROOT}/results/{gene_id}_results.txt'
-        with open(results_path, 'r') as file:
-            results = file.read()
-        results = results.split(',')
-        fitness = [float(r.strip()) for r in results]
+        if not os.path.isfile(results_path):
+            print(f"\t☠ Results file does not exist for gene_id: {gene_id}: {results_path}", flush=True)
+            GLOBAL_DATA[gene_id]['status'] = 'completed'
+            GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
+            return False
+        try:
+            with open(results_path, 'r') as file:
+                results = file.read()
+            fitness = [float(r.strip()) for r in results.split(',')]
+        except (OSError, ValueError) as exc:
+            print(f"\t☠ Invalid fitness results for {gene_id}: {exc}", flush=True)
+            GLOBAL_DATA[gene_id]['status'] = 'completed'
+            GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
+            return False
         # TODO: get all features later
         fitness = fitness[:len(FITNESS_WEIGHTS)]
+        if len(fitness) != len(FITNESS_WEIGHTS) or not all(np.isfinite(f) for f in fitness):
+            print(f"\t☠ Wrong/non-finite fitness shape for {gene_id}: {fitness}", flush=True)
+            GLOBAL_DATA[gene_id]['status'] = 'completed'
+            GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
+            return False
         fitness = tuple(fitness)
         
         GLOBAL_DATA[gene_id]['status'] = 'completed'
@@ -772,6 +795,7 @@ def customCrossover(ind1, ind2, llm_model):
                                           python_file='src/llm_crossover.py',
                                           job_name="crossover_operation",
                                           top_p=0.1, llm_model=llm_model, temperature=temperature)
+        job_done = False
 
         # Update global data for the new individual
         GLOBAL_DATA[new_gene_id] = {'sub_flag':successful_sub_flag, 'job_id':job_id, 
@@ -851,6 +875,7 @@ def customMutation(individual, llm_model, indpb, temp_min=0.02, temp_max=0.35):
                                               python_file='src/llm_mutation.py',
                                               job_name="mutation_operation",
                                               top_p=0.1, llm_model=llm_model, temperature=temperature)
+    job_done = False
     
     # Update the individual with the new gene ID
     # individual[0] = new_gene_id
@@ -880,15 +905,29 @@ def customMutation(individual, llm_model, indpb, temp_min=0.02, temp_max=0.35):
     return individual
 
 def remove_duplicates(population):
+    """Remove duplicate IDs and duplicate generated architecture files."""
     unique_individuals = []
     seen_chromosomes = set()
+    seen_architectures = set()
 
     for individual in population:
         # Convert chromosome to a tuple since lists are not hashable
         chromosome = tuple(individual)  
-        if chromosome not in seen_chromosomes:
-            unique_individuals.append(individual)
-            seen_chromosomes.add(chromosome)
+        if chromosome in seen_chromosomes:
+            continue
+        model_path = os.path.join(VARIANT_DIR, f"{MODEL}_{individual[0]}.py")
+        try:
+            with open(model_path, "rb") as model_file:
+                architecture = hashlib.sha256(model_file.read()).digest()
+        except OSError:
+            architecture = None
+        if architecture is not None and architecture in seen_architectures:
+            print(f"\t‣ Removing duplicate architecture for gene {individual[0]}", flush=True)
+            continue
+        unique_individuals.append(individual)
+        seen_chromosomes.add(chromosome)
+        if architecture is not None:
+            seen_architectures.add(architecture)
 
     return unique_individuals
 
@@ -981,11 +1020,35 @@ def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path
     return population_data, start_gen, global_data
 
 def true_nsga2(pop, k):
-    pop = tools.selNSGA2(pop, len(pop)) # 10 diff
-    k = k // 4 * 4
-    pop = k * pop
-    new_pop = tools.selTournamentDCD(pop, k) # mults of 4
-    return new_pop
+    """Select *k* parents, including for small populations.
+
+    ``selTournamentDCD`` requires a multiple of four candidates.  The old
+    implementation rounded smaller requests down to zero, which silently
+    disabled crossover whenever only one or two valid individuals remained.
+    """
+    if not pop or k <= 0:
+        return []
+
+    ranked = tools.selNSGA2(pop, len(pop))
+    if k < 4:
+        # DCD cannot operate here; retain the best candidates and repeat as
+        # needed so the caller still receives a mating pool of the requested
+        # size.
+        return ranked[:k]
+
+    dcd_k = k // 4 * 4
+    candidates = dcd_k * ranked
+    selected = tools.selTournamentDCD(candidates, dcd_k)
+    unique = []
+    seen = set()
+    for ind in selected + ranked:
+        if ind[0] in seen:
+            continue
+        unique.append(ind)
+        seen.add(ind[0])
+        if len(unique) >= min(k, len(ranked)):
+            break
+    return unique
 
 def create_population(n, llm_model):
     individual_func = partial(toolbox.individual, llm_model=llm_model)
@@ -1071,7 +1134,6 @@ if __name__ == "__main__":
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         GEN_COUNT = gen
-        TOP_N_GENES = tools.selSPEA2(population, NUM_EOT_ELITES)
         box_print(f"STARTING GENERATION: {gen}", new_line_end=False)
         print_population(population, GLOBAL_DATA)
         box_print(f"Invalid Removal", print_bbox_len=60, new_line_end=False)
@@ -1079,8 +1141,8 @@ if __name__ == "__main__":
         population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
 
         '''
-        IF POPULATION IS LESS THAN NUM_ELITE INDIVIDUALS, GENERATE MORE FROM SCRATCH
-         * todo: clean up this code/consolidate with previous code *
+        Require enough valid individuals to maintain the configured elite set.
+        If too many evaluations fail, restart population creation from scratch.
         '''
 
         box_print("CURRENT POPULATION SIZE:", len(population))
@@ -1101,20 +1163,25 @@ if __name__ == "__main__":
             population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
             box_print("CURRENT POPULATION SIZE:", len(population))
 
+        # All downstream selection must use the valid population and a
+        # bounded elite count.  num_elites is a target, not a requirement
+        # that can invalidate an otherwise usable generation.
+        elite_count = min(num_elites, len(population))
+        TOP_N_GENES = tools.selSPEA2(population, min(NUM_EOT_ELITES, len(population)))
+
         print_population(population, GLOBAL_DATA)
         # Select the next generation's parents
         box_print(f"Selection", print_bbox_len=60, new_line_end=False)
         # These bypass the mutation and cross-over so we dont lose them
 
-        elites = tools.selSPEA2(population, num_elites)
+        elites = tools.selSPEA2(population, elite_count)
         
         # Select the next generation's parents
-        if len(population) < population_size:
-            print(f"Selecting {len(population)} offspring")
-            offspring = toolbox.select(population, len(population) - (len(population) % 4))
-        else:
-            print(f"Selecting {population_size} offspring")
-            offspring = toolbox.select(population, population_size)
+        offspring_count = min(population_size, len(population))
+        # Keep at least one pair; true_nsga2 handles requests below four.
+        offspring_count = max(2, offspring_count)
+        print(f"Selecting {offspring_count} offspring")
+        offspring = toolbox.select(population, offspring_count)
         
         print_population(offspring, GLOBAL_DATA)
         

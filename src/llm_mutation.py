@@ -33,7 +33,6 @@ def augment_network(input_filename='network.py', output_filename='network_x.py',
         raise ValueError(f"No non-empty editable code blocks found in {input_filename}")
     print(f'Found {len(editable_indices)} editable code blocks', flush=True)
     augment_idx = int(np.random.choice(editable_indices))
-    # select code to be augmented randomly 
     code2llm = parts[augment_idx]
     # prompt_templates = glob.glob(f'{ROOT_DIR}/templates/FixedPrompts/*/*.txt')
     # template_path = np.random.choice(prompt_templates)

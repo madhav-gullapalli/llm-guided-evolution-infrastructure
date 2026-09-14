@@ -31,7 +31,7 @@ PROMPTS = f"templates/{DEFAULT_PROMPT_GROUP}/**/*.txt"
 # TODO: Adding this here, I think it's supposed to parse from the command line
 OUTPUT_DIR = "titanic_test"
 PORT=12676
-LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "1200"))
+LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "1600"))
 
 CLUSTER = "pace-ice"
 LLM_MODEL = 'llama3.3'
@@ -112,10 +112,10 @@ num_generations = 5 # Number of generations
 start_population_size = 12  # Starting population size per island
 # start_population_size = 144   # Size of the population 124=72
 #population_size = 44 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
-population_size = 24 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
+population_size = 66 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
 crossover_probability = 0.35  # Probability of mating two individuals
 mutation_probability = 0.8 # Probability of mutating an individual
-num_elites = 8
+num_elites = 5
 hof_size = 100
 max_gen_attempts = 5
 migration_gen = 5
