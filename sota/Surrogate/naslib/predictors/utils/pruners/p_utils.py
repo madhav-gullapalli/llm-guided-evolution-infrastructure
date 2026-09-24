@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 def get_some_data(train_dataloader, num_batches, device):
     traindata = []
     dataloader_iter = iter(train_dataloader)

@@ -5,7 +5,6 @@
 #SBATCH -C "H200"
 #SBATCH --mem 10G
 #SBATCH -c 48
-#SBATCH --exclude=atl1-1-03-014-16-0
 echo "Launching AIsurBL"
 hostname
 module load gcc/13.2.0
@@ -15,4 +14,4 @@ export TOKENIZERS_PARALLELISM=false
 export UV_CACHE_DIR="${TMPDIR:-${SLURM_TMPDIR:-/tmp}}/uv-cache-${SLURM_JOB_ID:-$$}"
 mkdir -p "$UV_CACHE_DIR"
 echo "Using UV cache: $UV_CACHE_DIR"
-uv run python llm_crossover.py '/home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure/sota/Titanic/model.py' '/home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure/sota/Titanic/models/Menghao/model_x.py' '/home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure/sota/Titanic/models/Menghao/model_z.py'  --top_p 0.15   --temperature 0.1 --apply_quality_control 'True' --bit 8
+uv run python llm_crossover.py '/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/sota/Titanic/model.py' '/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/sota/Titanic/models/Menghao/model_x.py' '/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/sota/Titanic/models/Menghao/model_z.py'  --top_p 0.15   --temperature 0.1 --apply_quality_control 'True' --bit 8

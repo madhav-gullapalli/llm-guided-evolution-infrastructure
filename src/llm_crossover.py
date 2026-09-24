@@ -12,7 +12,7 @@ from cfg.constants import *
 from utils.print_utils import box_print
 from llm_utils import (split_file, submit_mixtral, submit_mixtral_hf, 
                        llm_code_qc, str2bool, extract_note, generate_augmented_code, 
-                       clean_code_from_llm, retrieve_base_code)
+                       clean_code_from_llm, retrieve_base_code, fill_prompt_template)
 
 
 def augment_network(input_filename_x, input_filename_y, output_filename,
@@ -39,18 +39,8 @@ def augment_network(input_filename_x, input_filename_y, output_filename,
     # Split the input files
     parts_x = split_file(input_filename_x)
     parts_y = split_file(input_filename_y)
-    if len(parts_x) == 1:
-        parts_x = ["", parts_x[0]]
-    if len(parts_y) == 1:
-        parts_y = ["", parts_y[0]]
     # Create tuples of parts to be augmented
-    parts = [
-        (x, y, idx)
-        for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]), start=1)
-        if x.strip() and y.strip()
-    ]
-    if not parts:
-        raise ValueError(f"No editable code blocks found in {input_filename_x} and {input_filename_y}")
+    parts = [(x, y, idx + 1) for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]))]
     random.shuffle(parts)
     # Find differing parts
     for x, y, augment_idx in parts:
@@ -63,15 +53,20 @@ def augment_network(input_filename_x, input_filename_y, output_filename,
     with open(template_path, 'r') as file:
         template_txt = file.read()
 
-    # Add code to be augmented
-    txt2llm = template_txt.format(x.strip(), y.strip())
+    # Add code to be augmented (escape braces inside the code blocks)
+    txt2llm = fill_prompt_template(template_txt, x.strip(), y.strip())
     # Generate augmented code
     code_from_llm = generate_augmented_code(txt2llm, augment_idx, apply_quality_control,
                                             top_p, llm_model, temperature)
     
-    if not code_from_llm:
-        print("LLM generation failed; keeping the original selected code block.", flush=True)
-        code_from_llm = x.strip()
+    # Do not persist failed LLM outputs (literal "ERROR" / empty).
+    if (not code_from_llm) or str(code_from_llm).strip() == "ERROR":
+        box_print(
+            "Crossover failed: no valid code from LLM; not writing gene file",
+            print_bbox_len=120,
+            new_line_end=False,
+        )
+        sys.exit(1)
     
     # Insert note if present
     temp_txt = parts_x[augment_idx]

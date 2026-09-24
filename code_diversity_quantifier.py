@@ -171,8 +171,12 @@ class CodeRepository:
         self._ast_cache: Dict[str, Counter[str]] = {}
 
     def resolve_path(self, gene_id: str) -> Path:
-        filename = f"network_{gene_id}.py"
-        return self.models_root / filename
+        # Surrogate genes are model_<id>.py; ExquisiteNet uses network_<id>.py
+        for filename in (f"model_{gene_id}.py", f"network_{gene_id}.py"):
+            candidate = self.models_root / filename
+            if candidate.is_file():
+                return candidate
+        return self.models_root / f"model_{gene_id}.py"
 
     def load_code(self, gene_id: str) -> Optional[str]:
         if gene_id in self._code_cache:
