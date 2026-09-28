@@ -2,7 +2,7 @@ run.sh
 ------
 #!/bin/bash
 #SBATCH --job-name=llm_opt
-#SBATCH -t 8:00:00              	
+#SBATCH -t 2:00:00              	
 #SBATCH --mem 16G
 #SBATCH -c 4                         
 #SBATCH -N 1
@@ -15,8 +15,8 @@ mixt.sh
 ------
 #!/bin/bash
 #SBATCH --job-name=AIsur_x1
-#SBATCH -t 5:00:00
-#SBATCH --gres=gpu:3
+#SBATCH -t 0:30:00
+#SBATCH --gres=gpu:1
 #SBATCH -C "H200"
 #SBATCH --mem 10G
 #SBATCH -c 48
@@ -34,7 +34,7 @@ python-bash-script
 ------
 #!/bin/bash
 #SBATCH --job-name=evaluateGene
-#SBATCH -t 4:00:00
+#SBATCH -t 0:30:00
 #SBATCH --gres=gpu:1
 #SBATCH -G 1
 #SBATCH --mem 16G
@@ -49,7 +49,7 @@ llm-bash-script
 ------
 #!/bin/bash
 #SBATCH --job-name=llm_oper
-#SBATCH -t 8:00:00
+#SBATCH -t 2:00:00
 #SBATCH --mem 16G
 #SBATCH -c 2
 #SBATCH -N 1
@@ -62,7 +62,7 @@ server-sh
 ------
 #!/bin/bash
 #SBATCH --job-name=LLMGE01_Server
-#SBATCH -t 8:00:00
+#SBATCH -t 2:00:00
 #SBATCH --nodes=1
 #SBATCH -G 2
 #SBATCH -C "H200"
@@ -79,7 +79,7 @@ island-controller
 #SBATCH --job-name=IslandsController
 #SBATCH -N1 --ntasks-per-node=16
 #SBATCH --mem-per-gpu=16G
-#SBATCH --time=16:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel

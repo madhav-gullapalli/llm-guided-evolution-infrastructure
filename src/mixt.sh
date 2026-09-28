@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=AIsur_x1
-#SBATCH -t 5:00:00
-#SBATCH --gres=gpu:3
+#SBATCH -t 0:30:00
+#SBATCH --gres=gpu:1
 #SBATCH -C "H200"
 #SBATCH --mem 10G
 #SBATCH -c 48

@@ -3,10 +3,35 @@ import numpy as np
 import torch
 import platform
 import yaml
+from enum import IntEnum
+
+
+class EvolutionMode(IntEnum):
+    """Which explicit LLMGE artifact is allowed to evolve."""
+
+    SURROGATE = 1
+    USE = 2
+    BOTH = 3  # Reserved: the paired seed layout makes this a later extension.
+
+
+# Accept either the descriptive name or the historical numeric form.
+_evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", "USE").upper()
+evolution_mode = EvolutionMode[
+    _evolution_mode_value if not _evolution_mode_value.isdigit()
+    else EvolutionMode(int(_evolution_mode_value)).name
+]
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOTA_ROOT = os.path.join(ROOT_DIR, 'sota/Surrogate')
-SEED_NETWORK = os.path.join(SOTA_ROOT, 'model.py')
+# Both seed programs contain a concrete surrogate and a concrete usage
+# strategy.  Only their # --OPTION-- placement differs, so the unchanged
+# LLMGE block mutation pipeline selects the intended component.
+_seed_by_mode = {
+    EvolutionMode.SURROGATE: 'model.py',
+    EvolutionMode.USE: f"usage_{os.getenv('LLMGE_USAGE_SEED', 'bananas')}.py",
+    EvolutionMode.BOTH: 'model.py',  # reserved until paired mutation is added
+}
+SEED_NETWORK = os.path.join(SOTA_ROOT, _seed_by_mode[evolution_mode])
 MODEL = "model"
 DATA_PATH = SOTA_ROOT
 # Path to local LLM model path used by server.py for LLM operations
@@ -47,7 +72,7 @@ LLM_DEEPSEEK = 'deepseek'
 LLM_GEMINI = 'gemini'
 
 # LLMs allowed for island runs
-ISLAND_LLMS = [LLM_QWEN, LLM_MIXTRAL, LLM_DEEPSEEK, LLM_LLAMA3, LLM_GEMMA2, LLM_GEMMA3, LLM_GEMINI]
+ISLAND_LLMS = [LLM_QWEN, LLM_MIXTRAL, LLM_DEEPSEEK, LLM_LLAMA3]
 
 ENVIRONMENT_DIR = os.path.join(ROOT_DIR, ".venv")
 SLURM_CONFIG_DIR = os.path.join(ROOT_DIR, "slurm-config/")
@@ -108,17 +133,17 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.25
-num_generations = 5 # Number of generations
+num_generations = 1 # Number of generations
 start_population_size = 12  # Starting population size per island
 # start_population_size = 144   # Size of the population 124=72
 #population_size = 44 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
-population_size = 66 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
+population_size = 12 # Bounded generation size
 crossover_probability = 0.35  # Probability of mating two individuals
 mutation_probability = 0.8 # Probability of mutating an individual
 num_elites = 5
 hof_size = 100
 max_gen_attempts = 5
-migration_gen = 5
+migration_gen = 1  # Run one migration era for the one-generation budget
 """
 Misc. Non-sense
 """
