@@ -18,7 +18,8 @@ from utils.print_utils import box_print
 
 from llm_utils import (split_file, submit_mixtral, submit_mixtral_hf, 
                        llm_code_qc, str2bool, generate_augmented_code, 
-                       extract_note, clean_code_from_llm, retrieve_base_code)
+                       extract_note, clean_code_from_llm, retrieve_base_code,
+                       fill_prompt_template)
 
 def augment_network(input_filename='network.py', output_filename='network_x.py', template_txt=None,
                     top_p=0.15, llm_model=LLM_DEEPSEEK, temperature=0.1, apply_quality_control=False):
@@ -26,13 +27,8 @@ def augment_network(input_filename='network.py', output_filename='network_x.py',
     print(f'Loading {input_filename} code')
     print('Using')
     parts = split_file(input_filename)
-    if len(parts) == 1:
-        parts = ["", parts[0]]
-    editable_indices = [idx for idx in range(1, len(parts)) if parts[idx].strip()]
-    if not editable_indices:
-        raise ValueError(f"No non-empty editable code blocks found in {input_filename}")
-    print(f'Found {len(editable_indices)} editable code blocks', flush=True)
-    augment_idx = int(np.random.choice(editable_indices))
+    augment_idx = np.random.randint(1, len(parts))
+    # select code to be augmented randomly 
     code2llm = parts[augment_idx]
     # prompt_templates = glob.glob(f'{ROOT_DIR}/templates/FixedPrompts/*/*.txt')
     # template_path = np.random.choice(prompt_templates)
@@ -42,14 +38,20 @@ def augment_network(input_filename='network.py', output_filename='network_x.py',
     with open(fname, 'r') as file:
         template_txt = file.read()
     
-    # add code to be augmented 
-    txt2llm = template_txt.format(code2llm.strip())
+    # add code to be augmented (escape braces inside the code block)
+    txt2llm = fill_prompt_template(template_txt, code2llm.strip())
     code_from_llm = generate_augmented_code(txt2llm, augment_idx-1, apply_quality_control,
                                             top_p, llm_model, temperature)
     
-    if not code_from_llm:
-        print("LLM generation failed; keeping the original selected code block.", flush=True)
-        code_from_llm = code2llm.strip()
+    # Do not persist failed LLM outputs (literal "ERROR" / empty) — those produce
+    # NameError genes and flood the evaluator queue.
+    if (not code_from_llm) or str(code_from_llm).strip() == "ERROR":
+        box_print(
+            "Mutation failed: no valid code from LLM; not writing gene file",
+            print_bbox_len=120,
+            new_line_end=False,
+        )
+        sys.exit(1)
 
     note_txt = extract_note(code2llm)
     parts[augment_idx] = f"\n{note_txt}{code_from_llm}\n"

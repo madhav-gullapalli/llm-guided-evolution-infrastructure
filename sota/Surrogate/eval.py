@@ -31,6 +31,11 @@ from src.cfg.constants_surrogate import (
 )
 
 from trajectory_plots import surrogate_data_plots
+from analysis import (
+    records_from_candidate_log,
+    records_from_test_set,
+    write_prediction_analysis,
+)
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
@@ -41,6 +46,8 @@ parser.add_argument('--debug', action='store_true', help='stores trajectory_log 
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
+parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
+parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -210,7 +217,7 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
             index += int(op) * (5 ** i)
         return index
     for i, c in enumerate(candidates):
-
+        c.predicted_accuracy = float(mean_preds[i])
         arch_index = compute_nb201_index(c.arch.op_indices)
         true_accuracy = c.arch.query(
             metric=Metric.VAL_ACCURACY,
@@ -221,7 +228,7 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
             "generation": int(self.current_epoch),
             "arch_index": int(arch_index),
             "op_indices": list(map(int, c.arch.op_indices)),
-            "predicted_accuracy": float(mean_preds[i]),
+            "predicted_accuracy": c.predicted_accuracy,
             "acquisition_value": float(acq_values[i]),
             "selected": bool(i in selected_indices),
             "true_accuracy": float(true_accuracy) if true_accuracy is not None else None
@@ -293,6 +300,21 @@ def debug_new_epoch(self, epoch):
             self.surrogate_test_metrics.append(tau)
             self.surrogate_test_metrics_mse.append(mse)
             print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
+            if not hasattr(self, "test_prediction_log"):
+                self.test_prediction_log = []
+            self.test_prediction_log.extend(
+                records_from_test_set(
+                    self.test_data,
+                    self.test_accuracies,
+                    mean_pred_scores,
+                    inner_epoch=epoch,
+                    gene_id=gene_id,
+                    parent_gene=args.parent_gene,
+                    outer_generation=args.outer_generation,
+                    seed=config.search.seed,
+                    trial=getattr(args, "trial", 0),
+                )
+            )
 
         # 5. Evaluation
         print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
@@ -302,10 +324,17 @@ def debug_new_epoch(self, epoch):
         if not hasattr(self, "trajectory"):
             self.trajectory = []
 
+        arch = getattr(model, "arch", model)
+        op_indices = getattr(arch, "op_indices", None)
+        if op_indices is not None:
+            op_indices = list(map(int, op_indices))
+        predicted = getattr(model, "predicted_accuracy", None)
+        if predicted is not None:
+            predicted = float(predicted)
         self.trajectory.append({
-            "op_indices": getattr(model, "op_indices", None),
+            "op_indices": op_indices,
             "generation": epoch,
-            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
+            "predicted_accuracy": predicted,
             "true_accuracy": model.accuracy
         })
         print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
@@ -404,6 +433,7 @@ print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
+    args.trial = i
     config.search.seed = args.seed*(i+1)
     config.seed = config.search.seed
     
@@ -491,6 +521,35 @@ for i in range(NUM_TRIALS):
             print(f"Candidate log saved to {candidate_path}")
         else:
             print("No candidate_log found on optimizer.")
+
+        analysis_records = []
+        if hasattr(optimizer, "test_prediction_log"):
+            analysis_records.extend(optimizer.test_prediction_log)
+        if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
+            analysis_records.extend(
+                records_from_candidate_log(
+                    optimizer.candidate_log,
+                    gene_id=gene_id,
+                    parent_gene=args.parent_gene,
+                    outer_generation=args.outer_generation,
+                    seed=config.search.seed,
+                    trial=i,
+                )
+            )
+        if analysis_records:
+            analysis_dir = os.path.join(config.save, "analysis")
+            analysis_paths = write_prediction_analysis(
+                analysis_records,
+                analysis_dir,
+                stem=f"predictions_trial_{i}_seed_{config.search.seed}",
+                title=f"{gene_id} trial {i} seed {config.search.seed}",
+            )
+            print(
+                f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
+            )
+            print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
+        else:
+            print("No prediction records found for analysis table.")
         # Retrieve the stored metrics
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics_tau = optimizer.surrogate_test_metrics

@@ -1,3 +1,4 @@
+import os
 import time
 import torch
 import transformers
@@ -5,14 +6,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import threading
 import asyncio
-import os
 from src.cfg.constants import *
 
 app = FastAPI(title="LLM API", version="1.0")
 
-# Keep the fork's batching policy configurable while retaining its defaults.
-BATCH_SIZE = int(os.getenv("LLM_SERVER_BATCH_SIZE", "8"))  # num of LLM requests to process at once
-BATCH_WAIT_TIME = float(os.getenv("LLM_SERVER_BATCH_WAIT_TIME", "2"))  # max wait time for batch to fill in s
+BATCH_SIZE = 8  # num of LLM requests to process at once
+BATCH_WAIT_TIME = 2  # max wait time for batch to fill in s
 
 class LLMRequest(BaseModel):
     prompt: str
@@ -36,7 +35,9 @@ class LLMModel:
         return cls._instance
     
     def _initialize(self):
-        print("initializing")
+        print("initializing", flush=True)
+        self._require_cuda()
+
         # TODO figure out how to better handle the initialization (i.e. mixtral dies because it doesn't have attention)
         # TODO find out why when this dies the code around it continues i.e. a model is returned to generate_text, but I never see the print out of "I created my instance"
         self.model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -46,10 +47,11 @@ class LLMModel:
             device_map="auto",
             attn_implementation="sdpa" # faster inference
         ).eval()
-        print("model loaded")
+        self._assert_model_on_gpu()
+        print("model loaded", flush=True)
 
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)
-        print("tokenizer created")
+        print("tokenizer created", flush=True)
         
         # decoder-only models need left padding for correct generation order
         self.tokenizer.padding_side = "left"
@@ -59,6 +61,8 @@ class LLMModel:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         
+        # Model already has device_map; do not pass device= to pipeline (it would
+        # force CPU and print the misleading "Device set to use cpu" message).
         self.pipeline = transformers.pipeline(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -72,15 +76,55 @@ class LLMModel:
             do_sample=True,
             batch_size=BATCH_SIZE # for batch support
         )
-        print("pipeline created")
+        print("pipeline created", flush=True)
         
         self.request_queue = asyncio.Queue() # queue for holding requests to process
         self.batch_task = None # current task
         self.batch_lock = asyncio.Lock() # lock for
-        self.batch_id = 0
-        self.request_id = 0
         self.is_processing = False # current state
-        print("ready to go")
+        print("ready to go", flush=True)
+
+    @staticmethod
+    def _require_cuda():
+        """Fail fast if GPUs are not visible — CPU 70B silently ruins islands runs."""
+        print(
+            f"torch={torch.__version__} cuda_build={torch.version.cuda} "
+            f"cuda_available={torch.cuda.is_available()} "
+            f"device_count={torch.cuda.device_count()} "
+            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+            flush=True,
+        )
+        if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+            raise RuntimeError(
+                "CUDA is not available to PyTorch. Refusing to load Llama on CPU. "
+                "Check module load cuda, GPU allocation (gres), and the torch CUDA build."
+            )
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            print(
+                f"  GPU {i}: {props.name} "
+                f"({props.total_memory / (1024**3):.1f} GiB)",
+                flush=True,
+            )
+
+    def _assert_model_on_gpu(self):
+        """Ensure device_map=auto did not fall back to an all-CPU placement."""
+        device_map = getattr(self.model, "hf_device_map", None)
+        print(f"hf_device_map={device_map}", flush=True)
+        if device_map is not None:
+            devices = {str(v) for v in device_map.values()}
+            if devices and devices.issubset({"cpu", "disk"}):
+                raise RuntimeError(
+                    f"Model landed entirely on CPU/disk ({device_map}). "
+                    "Aborting so islands do not run multi-hour CPU inference."
+                )
+            return
+        param_devices = {str(p.device) for p in self.model.parameters()}
+        print(f"param_devices={param_devices}", flush=True)
+        if param_devices == {"cpu"}:
+            raise RuntimeError(
+                "Model parameters are all on CPU. Aborting GPU-required load."
+            )
     
     async def start_batch_processor(self):
         """Start the batch processor if it's not already running"""
@@ -116,41 +160,35 @@ class LLMModel:
                             break
                     
                     batch_size = len(batch)
-                    self.batch_id += 1
-                    batch_id = self.batch_id
-                    max_new_tokens = max(req["max_new_tokens"] for req in batch)
-                    temperature = batch[0]["temperature"]
-                    top_p = batch[0]["top_p"]
-                    print(
-                        f"Processing batch {batch_id} of {batch_size} requests "
-                        f"(queued after collect: {self.request_queue.qsize()}, "
-                        f"max_new_tokens={max_new_tokens}, temperature={temperature}, top_p={top_p})",
-                        flush=True,
-                    )
+                    print(f"Processing batch of {batch_size} requests", flush=True)
                     
                     prompts = [req["prompt"] for req in batch]
                     
+                    max_new_tokens = max(req["max_new_tokens"] for req in batch)
+                    
+                    # all temps and top_p are same
+                    temperature = batch[0]["temperature"] 
+                    top_p = batch[0]["top_p"]
+                    
                     start_time = time.time()
                     
-                    # The pipeline is synchronous and can run for minutes.  Keep it
-                    # off FastAPI's event loop so new requests can join the queue.
+                    # Run blocking GPU inference off the asyncio event loop.
+                    # Calling pipeline() directly here freezes uvicorn for minutes
+                    # (no health checks, no new accepts) and can wedge the server
+                    # under a flood of mutation clients.
                     results = await asyncio.to_thread(
                         self.pipeline,
-                        prompts, 
+                        prompts,
                         max_new_tokens=max_new_tokens,
                         temperature=temperature,
-                        top_p=top_p
+                        top_p=top_p,
                     )
                     
                     response_time = round(time.time() - start_time, 2)
-                    print(
-                        f"Finished batch {batch_id} in {response_time}s "
-                        f"(queued after finish: {self.request_queue.qsize()})",
-                        flush=True,
-                    )
+                    print(f"Batch of {batch_size} finished in {response_time}s", flush=True)
                     
                     # for every future, set its result
-                    for request, result, future in zip(batch, results, futures):
+                    for result, future in zip(results, futures):
                         output_txt = result[0].get("generated_text", str(result))
                         
                         future.set_result({
@@ -158,11 +196,6 @@ class LLMModel:
                             "response_time_sec": response_time,
                             "batch_size": batch_size
                         })
-                        print(
-                            f"Request {request.get('request_id', '?')} completed "
-                            f"(batch={batch_id}, total_wait={time.time() - request.get('queued_at', time.time()):.2f}s)",
-                            flush=True,
-                        )
                         
                         # done with task
                         self.request_queue.task_done()
@@ -193,15 +226,11 @@ class LLMModel:
         """Submit a request to the batch processor"""
         # future is a placeholder for later result
         future = asyncio.Future()
-        self.request_id += 1
-        request_dict["request_id"] = self.request_id
-        request_dict["queued_at"] = time.time()
+        
+        # put in queue
+        print('Hey I am about to access the request queue attribute')
         await self.request_queue.put((request_dict, future))
-        print(
-            f"Request {request_dict['request_id']} queued "
-            f"(queue size: {self.request_queue.qsize()})",
-            flush=True,
-        )
+        print('No problem, I got it')
         
         # start processing batches if not already started
         await self.start_batch_processor()
@@ -235,6 +264,7 @@ async def generate_text(request: LLMRequest):
         
         # Get the model instance
         model = LLMModel()
+        print(dir(model))
         
         # Submit to the batch processor and wait for result
         start_time = time.time()
