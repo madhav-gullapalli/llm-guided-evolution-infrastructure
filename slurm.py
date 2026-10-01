@@ -19,7 +19,7 @@ class RuntimeConfig:
             "LLMGE_SEED_NETWORK",
             os.path.join(self.SOTA_ROOT, "model.py"),
         )
-        self.PORT = int(os.getenv("LLMGE_PORT", "8137"))
+        self.PORT = int(os.getenv("LLMGE_PORT", "12676"))
 
 
 CONFIG = RuntimeConfig()
@@ -194,6 +194,8 @@ print(f"cuda tensor ok on {{x.device}}")
 PY
 
 export SERVER_HOSTNAME=$(hostname)
+# Jobs submitted below inherit this; src/cfg/constants.py reads it as PORT.
+export LLMGE_PORT={CONFIG.PORT}
 
 HOSTNAME_FILE=$(pwd)"/hostname.log"
 
@@ -205,7 +207,7 @@ echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT)"
 echo "Submitting island controller (count=$COUNT)"
 sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"
 
-uv run uvicorn server:app --host $SERVER_HOSTNAME --port {CONFIG.PORT} --workers 1
+uv run uvicorn server:app --host $SERVER_HOSTNAME --port $LLMGE_PORT --workers 1
 """
     server_config = sections.get("server-sh", "")
     replace_script_configuration("server.sh", server_config + local_llm_server)
