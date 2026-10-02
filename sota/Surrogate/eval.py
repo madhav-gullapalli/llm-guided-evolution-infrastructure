@@ -52,14 +52,13 @@ from naslib import utils
 from naslib.utils import get_dataset_api, create_exp_dir
 from naslib.utils.encodings import EncodingType
 from naslib.search_spaces import NasBench201SearchSpace 
-from naslib.optimizers import RegularizedEvolution, Bananas, Npenas
+from naslib.optimizers import RegularizedEvolution, Npenas
 from naslib.defaults.trainer import Trainer
 
 from naslib.predictors.ensemble import Ensemble
 from naslib.predictors.gp import VarSparseGPPredictor, GPPredictor
 from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor 
 
-from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
 import matplotlib.pyplot as plt
@@ -76,8 +75,15 @@ _variant_dir = args.variant_dir if os.path.isabs(args.variant_dir) else str(_scr
 if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 sys.path.append(_variant_dir)
-_model_module = importlib.import_module(args.model)
-surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+try:
+    _model_module = importlib.import_module(args.model)
+    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+except Exception as exc:
+    # An LLM variant may contain an invalid optional import or malformed
+    # helper.  Keep this individual evaluable using the canonical seed.
+    print(f"[Evaluator] Ignoring unusable generated variant {args.model}: {exc}")
+    _model_module = importlib.import_module(DEFAULT_MODEL_MODULE)
+    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
 if args.surrogate is not None:
     surrogate_config["name"] = args.surrogate
 
@@ -422,7 +428,14 @@ for i in range(NUM_TRIALS):
         if optimizer_name == "rea":
             optimizer = RegularizedEvolution(config)
         elif optimizer_name == "bananas":
-            optimizer = Bananas(config)
+            # The evolved module supplies the complete surrogate-usage
+            # strategy behind this single optimizer boundary.
+            optimizer = _model_module.SurrogateUsageOptimizer(
+                config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
+            )
+            # Keep the existing evaluator metrics/logging contract while the
+            # generated usage class owns the search implementation.
+            optimizer.new_epoch = types.MethodType(debug_new_epoch, optimizer)
         elif optimizer_name == "npenas":
             optimizer = Npenas(config)
         
@@ -436,23 +449,8 @@ for i in range(NUM_TRIALS):
             print(f"Injecting Custom Predictor: {p_name}")
             
             if optimizer_name == "bananas":
-                # --- MONKEY PATCHING ENSEMBLE ---
-                def _get_custom_ensemble(self):
-                    ensemble = Ensemble(num_ensemble=self.num_ensemble, ss_type=self.ss_type, predictor_type=self.predictor_type, config=self.config, zc=self.zc)
-                    # CHANGE: Create 3 instances matching the given custom predictor
-                    ensemble.ensemble = [
-                        predictor_cls(**predictor_kwargs) 
-                        for _ in range(self.num_ensemble)
-                    ]
-                    # try:
-                    #     print("Ensemble Predictor Hyperparameters:")
-                    #     print(ensemble.ensemble[0].default_hyperparams)
-                    # except:
-                    #     print("Predictor has no default_hyperparams attribute.")
-                    return ensemble
-
-                optimizer._get_ensemble = types.MethodType(_get_custom_ensemble, optimizer)
-                # --- END MONKEY PATCHING ---
+                # Predictor injection is owned by the generated usage seed.
+                pass
             else:
                 optimizer.predictor = predictor_cls(**predictor_kwargs)
         
@@ -564,10 +562,18 @@ for i in range(NUM_TRIALS):
 if not RUN_BASELINES or RUN_ALL:
     start_time = time.time()
 
+    try:
+        _predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+    except Exception as exc:
+        print(f"[Evaluator] Invalid generated predictor configuration: {exc}")
+        _model_module = importlib.import_module(DEFAULT_MODEL_MODULE)
+        surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+        _predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+
     history = run_experiment(
         "bananas",
         predictor_cls=LLM_NB201_Predictor,
-        predictor_kwargs=_model_module.build_predictor_kwargs(surrogate_config),
+        predictor_kwargs=_predictor_kwargs,
     )
 
     # run_experiment saves surrogate metrics to a JSON inside config.out_dir
