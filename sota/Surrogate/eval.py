@@ -12,7 +12,6 @@ import logging
 from scipy.stats import norm
 import sys
 import time
-import types
 import argparse
 from pathlib import Path
 
@@ -31,6 +30,7 @@ from src.cfg.constants_surrogate import (
 )
 
 from trajectory_plots import surrogate_data_plots
+from usage_instrumentation import instrument_surrogate_usage
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
@@ -243,85 +243,8 @@ print("Patched Bananas optimizer for batch acquisition function.")
 # --- LOAD API ---
 dataset_api = get_dataset_api(config.search_space, config.dataset)
 
-# --- MONKEY PATCH TO DEBUG TIMING ---
-def debug_new_epoch(self, epoch):
-    import time
-    from scipy.stats import kendalltau
-    self.current_epoch = epoch
-
-    if epoch < self.num_init:
-        model = self._sample_new_model()
-        self._set_scores(model)
-    else:
-        if len(self.next_batch) == 0:
-            # 1. Train
-            print("[Debug] Starting Fit...")
-            t0 = time.time()
-            xtrain, ytrain = self._get_train()
-            self.ensemble = self._get_ensemble()
-            
-            # Setup semi-supervised if needed (omitted for brevity as self.semi usually False)
-            
-            self.ensemble.fit(xtrain, ytrain)
-            t1 = time.time()
-            print(f"[Debug] Fit finished in {t1-t0:.2f}s")
-
-            # 2. Acquisition Setup
-            acq_fn = bananas_opt.acquisition_function(
-                ensemble=self.ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
-            )
-
-            # 3. Candidate Generation
-            print(f"[Debug] Generating {self.num_candidates} candidates...")
-            t2 = time.time()
-            candidates = self._get_new_candidates(ytrain=ytrain)
-            t3 = time.time()
-            print(f"[Debug] Generated candidates in {t3-t2:.2f}s")
-
-            # 4. Selection (Acquisition)
-            print("[Debug] Selecting best candidates...")
-            self.next_batch = self._get_best_candidates(candidates, acq_fn)
-            t4 = time.time()
-            print(f"[Debug] Selection finished in {t4-t3:.2f}s")
-            
-            # Compute Kendall Tau on test set (only when ensemble is retrained)
-            pred_scores = self.ensemble.query(self.test_data)  # Shape: (num_ensemble, num_test)
-            # Aggregate ensemble predictions by taking mean across ensemble members
-            mean_pred_scores = np.mean(pred_scores, axis=0)  # Shape: (num_test,)
-            
-            # Calculate Kendall Tau (Ranking Correlation)
-            tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
-            
-            # Calculate MSE (Mean Squared Error)
-            mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
-            
-            # Log the metrics
-            self.surrogate_test_metrics.append(tau)
-            self.surrogate_test_metrics_mse.append(mse)
-            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
-
-        # 5. Evaluation
-        print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
-        t5 = time.time()
-        model = self.next_batch.pop()
-        self._set_scores(model)
-        if not hasattr(self, "trajectory"):
-            self.trajectory = []
-
-        self.trajectory.append({
-            "op_indices": getattr(model, "op_indices", None),
-            "generation": epoch,
-            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
-            "true_accuracy": model.accuracy
-        })
-        print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
-
-# Apply the patch
-bananas_opt.Bananas.new_epoch = debug_new_epoch
-print("Monkey-patched Bananas.new_epoch for profiling.")
-
-
-
+# The evolved optimizer's own new_epoch implementation must never be replaced here.
+# Metrics are collected independently by the per-instance instrumentation below.
 
 # =============================================================================
 # STRICTLY MINIMAL PATCH: SPEED + ACCURACY FIX
@@ -435,7 +358,7 @@ for i in range(NUM_TRIALS):
             )
             # Keep the existing evaluator metrics/logging contract while the
             # generated usage class owns the search implementation.
-            optimizer.new_epoch = types.MethodType(debug_new_epoch, optimizer)
+            instrument_surrogate_usage(optimizer)
         elif optimizer_name == "npenas":
             optimizer = Npenas(config)
         
