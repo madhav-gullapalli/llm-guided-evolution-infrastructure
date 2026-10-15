@@ -214,11 +214,11 @@ export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 # Change to the repository root
 cd {CONFIG.ROOT_DIR}
 
-# Starts running Island Migration with 3 surrogate-prompt islands
+# Starts running Island Migration with 1 surrogate-prompt island
 uv run python islands_wrapper.py titanic_islands_run \\
-    --num_islands 3 \\
+    --num_islands 1 \\
     --llms llama3 \\
-    --prompt_groups "naslib/efficiency,naslib/general,naslib/ranking"
+    --prompt_groups "naslib/general"
 
 if (( COUNT > 1 )); then
     NEXT_COUNT=$((COUNT - 1))

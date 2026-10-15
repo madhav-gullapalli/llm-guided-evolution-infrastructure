@@ -1,6 +1,7 @@
 import os
 import re
 import argparse
+import shlex
 import glob
 from deap import base, creator, tools
 from deap.tools import HallOfFame
@@ -246,6 +247,24 @@ def get_generation(global_path):
 
     return max_gen if max_gen > 0 else 1
 
+def spawn_coevolution_islands(checkpoints):
+    """Submit the joint worker through the existing island job template per era."""
+    os.makedirs(checkpoints, exist_ok=True)
+    command_pattern = (r"uv run python run_improved\.py\s+--checkpoints \{\}"
+                       r"\s+--global_path \{\}\s+--llm_model \{\}\s+--prompt_group \{\}")
+    command = "uv run python run_coevolution.py --checkpoints " + shlex.quote(os.path.abspath(checkpoints))
+    script, replacements = re.subn(command_pattern, lambda match: command,
+                                  ISLANDS_BASH_SCRIPT_TEMPLATE)
+    if replacements != 1:
+        raise ValueError("Expected one worker command in the existing island job template")
+    eras = 1 if migration_gen == 0 else num_generations // migration_gen
+    for era in range(eras):
+        print(f"Spawning coevolution island for era {era + 1}", flush=True)
+        job_id = submit_run("src/island_temp_script.sh", script)
+        if not job_id or not check4job_completion(job_id):
+            raise RuntimeError(f"Coevolution island did not complete: {job_id}")
+
+
 # Island Controller Script to handle creating islands and migrating individuals between them.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run Generation')
@@ -257,6 +276,10 @@ if __name__ == "__main__":
     parser.add_argument('--prompt_group', type=str, help='Deprecated: single prompt group to apply to all islands', default=None)
     # Parse the arguments
     args = parser.parse_args()
+    # MODE=3 selects the paired worker; modes 1/2 retain solo islands.
+    if globals().get("MODE") == 3:
+        spawn_coevolution_islands(args.checkpoints)
+        raise SystemExit(0)
     island_script = "src/island_temp_script.sh"
     checkpoints = args.checkpoints
 

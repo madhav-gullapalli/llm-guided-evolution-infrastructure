@@ -164,6 +164,18 @@ def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK,
         with open(f'{ROOT_DIR}/templates/ConstantRules.txt', 'r') as file:
             rules_txt = file.read()
         template_txt = f'{template_txt}\n{rules_txt}'
+    component = {"coev_surrogate.py": "surrogate", "coev_usage.py": "usage"}.get(
+        os.path.basename(SEED_NETWORK))
+    if component:
+        contract_path = os.path.join(ROOT_DIR, "templates", "naslib", "contracts", component + ".txt")
+        with open(contract_path) as file:
+            contract = file.read()
+        with open(SEED_NETWORK) as file:
+            fixed_header = file.read().split("# --OPTION--", 1)[0]
+        # This template is formatted later with the editable block. Escape
+        # literal braces in context so dicts do not become format fields.
+        context = "\n" + contract + "\nFixed module header (context only):\n" + fixed_header
+        template_txt += context.replace("{", "{{").replace("}", "}}")
     return template_txt, mute_type
 
 def write_bash_script(llm_model,
@@ -401,7 +413,7 @@ def generate_random_string(length=20):
     random_string = 'xXx'+random_string
     return random_string
     
-def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4):
+def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4, top_p=0.1):
     box_print("Create Individual", print_bbox_len=60, new_line_end=False)
     out_dir = os.path.join(OUTPUT_DIR, str(GENERATION))
     config = load_yaml()
@@ -417,7 +429,7 @@ def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4):
                                             python_file='src/llm_mutation.py',
                                             llm_model=llm_model,
                                             job_name="create_individual",
-                                            top_p=0.1, temperature=temperature)
+                                            top_p=top_p, temperature=temperature)
     GLOBAL_DATA[gene_id] = {'sub_flag':successful_sub_flag, 'job_id':job_id, 
                             'status':'subbed file', 'fitness':None, 'start_time':time.time()}
     GLOBAL_DATA_ANCESTRY[gene_id] = {'GENES':[gene_id], 'MUTATE_TYPE':["CREATED"]}
@@ -1050,9 +1062,10 @@ def true_nsga2(pop, k):
             break
     return unique
 
-def create_population(n, llm_model):
-    individual_func = partial(toolbox.individual, llm_model=llm_model)
+def create_population(n, llm_model, **generation_kwargs):
+    individual_func = partial(toolbox.individual, llm_model=llm_model, **generation_kwargs)
     return tools.initRepeat(list, individual_func, n)
+
 
 # Define the problem
 creator.create("FitnessMulti", base.Fitness, weights=FITNESS_WEIGHTS)  # Adjust weights as needed
@@ -1126,6 +1139,10 @@ if __name__ == "__main__":
         delayed_creation_check(population)
         hof = tools.ParetoFront()
 
+    # Checkpoints may have been created by an earlier version that evaluated
+    # duplicate source files, so apply the same source-level guard on resume.
+    population = remove_duplicates(population)
+
     # Evaluate the entire population
     for ind in population:
         ind.fitness.values = PLACEHOLDER_FITNESS
@@ -1140,28 +1157,15 @@ if __name__ == "__main__":
         # Remove individuals with placeholder fitness
         population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
 
-        '''
-        Require enough valid individuals to maintain the configured elite set.
-        If too many evaluations fail, restart population creation from scratch.
-        '''
-
         box_print("CURRENT POPULATION SIZE:", len(population))
-        while len(population) < num_elites:
-            print("MINIMUM NUMBER OF IND NOT ACHIEVED, TRYING AGAIN")
-            GEN_COUNT = -1
-            TOP_N_GENES = None
-            LINKED_GENES = {}
-            GLOBAL_DATA = {}
-            GLOBAL_DATA_HIST = {}
-            GLOBAL_DATA_ANCESTRY = {}
-            start_gen = 0
-            population = toolbox.population(n=start_population_size, llm_model=llm_model)
-            delayed_creation_check(population)
-            for ind in population:
-                ind.fitness.values = PLACEHOLDER_FITNESS
-            check_and_update_fitness(population)
-            population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
-            box_print("CURRENT POPULATION SIZE:", len(population))
+        if len(population) < num_elites:
+            print(
+                f"Only {len(population)} unique valid individuals are available; "
+                "continuing with the reduced population.",
+                flush=True,
+            )
+        if not population:
+            raise RuntimeError("No valid unique individuals were generated.")
 
         # All downstream selection must use the valid population and a
         # bounded elite count.  num_elites is a target, not a requirement

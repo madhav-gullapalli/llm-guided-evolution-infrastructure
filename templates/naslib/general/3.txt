@@ -1,8 +1,12 @@
-Improve this block of code from a surrogate-assisted NAS system. The larger goal of the pipeline is to find strong architectures with fewer expensive ground-truth evaluations by using the surrogate as an efficient guide.
+Edit the surrogate construction component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-The goal is to evolve a better surrogate for neural architecture search, so favor edits that improve ranking quality, sample efficiency, and reliable generalization. Avoid changes that over-specialize the code to one narrow case unless the code clearly already assumes that case, because the pipeline benefits from search-space-robust guidance.
+Candidate direction: Tune learning rate and row subsampling for reliable ranking with few training samples.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-The current code block:
+Return the entire replacement editable block in one Python code fence, including any new imports.
+
+The current editable code block:
 ```python
 {}
 ```

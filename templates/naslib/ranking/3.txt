@@ -1,8 +1,12 @@
-This surrogate is used inside an evolutionary or BANANAS-style NAS loop where candidate ordering matters more than exact score prediction. Poor ordering sends the search toward weak regions of the architecture space and wastes evaluations.
+Edit the surrogate usage optimizer component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-Improve this code accordingly. Prioritize edits that strengthen pairwise discrimination, ranking consistency, and selection usefulness during search.
+Candidate direction: Improve acquisition uncertainty handling, preserving the ensemble axis and candidate axis.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-The current code block:
+Return the entire replacement editable block in one Python code fence, including any new imports.
+
+The current editable code block:
 ```python
 {}
 ```

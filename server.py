@@ -134,14 +134,25 @@ class LLMModel:
                     
                     # The pipeline is synchronous and can run for minutes.  Keep it
                     # off FastAPI's event loop so new requests can join the queue.
-                    results = await asyncio.to_thread(
-                        self.pipeline,
-                        prompts, 
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        top_p=top_p
-                    )
-                    
+                    # A pipeline call has one sampling configuration. Group
+                    # compatible requests instead of applying request zero's
+                    # settings to everyone in the batch.
+                    groups = {}
+                    for index, req in enumerate(batch):
+                        key = (req["max_new_tokens"], req["temperature"], req["top_p"])
+                        groups.setdefault(key, []).append(index)
+                    results = [None] * len(batch)
+                    for (tokens, temp, nucleus), indices in groups.items():
+                        group_results = await asyncio.to_thread(
+                            self.pipeline,
+                            [batch[index]["prompt"] for index in indices],
+                            max_new_tokens=tokens,
+                            temperature=temp,
+                            top_p=nucleus,
+                        )
+                        for index, result in zip(indices, group_results):
+                            results[index] = result
+
                     response_time = round(time.time() - start_time, 2)
                     print(
                         f"Finished batch {batch_id} in {response_time}s "

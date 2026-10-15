@@ -11,15 +11,18 @@ class EvolutionMode(IntEnum):
 
     SURROGATE = 1
     USE = 2
-    BOTH = 3  # Reserved: the paired seed layout makes this a later extension.
+    BOTH = 3  # Paired surrogate/usage coevolution.
 
 
-# Accept either the descriptive name or the historical numeric form.
-_evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", "USE").upper()
+# 1: solo surrogate; 2: solo usage; 3: paired coevolution.
+MODE = 3
+# The existing environment override accepts names or numbers.
+_evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", str(MODE)).upper()
 evolution_mode = EvolutionMode[
     _evolution_mode_value if not _evolution_mode_value.isdigit()
     else EvolutionMode(int(_evolution_mode_value)).name
 ]
+MODE = int(evolution_mode)
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOTA_ROOT = os.path.join(ROOT_DIR, 'sota/Surrogate')
@@ -29,7 +32,7 @@ SOTA_ROOT = os.path.join(ROOT_DIR, 'sota/Surrogate')
 _seed_by_mode = {
     EvolutionMode.SURROGATE: 'model.py',
     EvolutionMode.USE: f"usage_{os.getenv('LLMGE_USAGE_SEED', 'bananas')}.py",
-    EvolutionMode.BOTH: 'model.py',  # reserved until paired mutation is added
+    EvolutionMode.BOTH: 'model.py',  # Import-compatible default; workers use their own seeds
 }
 SEED_NETWORK = os.path.join(SOTA_ROOT, _seed_by_mode[evolution_mode])
 MODEL = "model"
@@ -133,11 +136,11 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.25
-num_generations = 1 # Number of generations
-start_population_size = 12  # Starting population size per island
+num_generations = 5 # Number of generations
+start_population_size = 36  # Starting population size per island
 # start_population_size = 144   # Size of the population 124=72
 #population_size = 44 # with cx_prob (0.25) and mute_prob (0.7) you get about %50 successful turnover
-population_size = 12 # Bounded generation size
+population_size = 36 # Bounded generation size
 crossover_probability = 0.35  # Probability of mating two individuals
 mutation_probability = 0.8 # Probability of mutating an individual
 num_elites = 5

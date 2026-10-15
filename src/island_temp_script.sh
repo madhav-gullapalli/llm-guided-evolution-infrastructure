@@ -2,7 +2,7 @@
 #SBATCH --job-name=IslandsController
 #SBATCH -N1 --ntasks-per-node=16
 #SBATCH --mem-per-gpu=16G
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
@@ -16,4 +16,4 @@ module load cuda
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 
 # Run Python script
-uv run python run_improved.py --checkpoints titanic_islands_run/island_llama3_naslib-ranking --global_path titanic_islands_run/global_data --llm_model llama3 --prompt_group naslib/ranking
+uv run python run_coevolution.py --checkpoints /home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure/titanic_islands_run

@@ -1,14 +1,12 @@
-This code is part of a surrogate model used inside a NASLib surrogate-assisted neural architecture search pipeline. The search loop uses the surrogate to score many candidate architectures before spending expensive evaluations on only a few of them. Improve this code to make the surrogate more useful for selecting promising architectures during search.
+Edit the surrogate construction component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-Priorities:
-- Improve the surrogate's ability to distinguish stronger architectures from weaker ones.
-- Favor changes that generalize in low-data or cold-start settings.
-- Preserve search-space agnosticism when possible.
-- Keep the code clear, valid, and compatible with the surrounding pipeline.
+Candidate direction: Tune tree depth and minimum child weight for reliable ranking with few training samples.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-Prefer changes that support code-oriented architecture understanding rather than task-specific shortcuts, since better surrogate guidance should improve the overall search trajectory rather than one isolated prediction.
+Return the entire replacement editable block in one Python code fence, including any new imports.
 
-The current code block:
+The current editable code block:
 ```python
 {}
 ```
