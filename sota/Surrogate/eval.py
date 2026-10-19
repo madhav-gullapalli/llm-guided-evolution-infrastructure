@@ -529,6 +529,9 @@ for i in range(NUM_TRIALS):
                         predictor_cls(**predictor_kwargs) 
                         for _ in range(self.num_ensemble)
                     ]
+                    # Ensemble.fit otherwise resets every member to the base class's default_hyperparams,
+                    # discarding the gene's settings unless the gene's own fit() re-applies them.
+                    ensemble.set_hyperparams = lambda params: setattr(ensemble, "hyperparams", params)
                     # try:
                     #     print("Ensemble Predictor Hyperparameters:")
                     #     print(ensemble.ensemble[0].default_hyperparams)

@@ -12,7 +12,8 @@ from cfg.constants import *
 from utils.print_utils import box_print
 from llm_utils import (split_file, submit_mixtral, submit_mixtral_hf, 
                        llm_code_qc, str2bool, extract_note, generate_augmented_code, 
-                       clean_code_from_llm, retrieve_base_code, fill_prompt_template)
+                       clean_code_from_llm, retrieve_base_code, fill_prompt_template,
+                       active_block_indices, block_note, reject_reason, NEW_GENE_ATTEMPTS)
 
 
 def augment_network(input_filename_x, input_filename_y, output_filename,
@@ -39,40 +40,49 @@ def augment_network(input_filename_x, input_filename_y, output_filename,
     # Split the input files
     parts_x = split_file(input_filename_x)
     parts_y = split_file(input_filename_y)
-    # Create tuples of parts to be augmented
-    parts = [(x, y, idx + 1) for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]))]
-    random.shuffle(parts)
-    # Find differing parts
-    for x, y, augment_idx in parts:
-        if x.strip() != y.strip():
+    # Create tuples of parts to be augmented (only blocks that run in parent x)
+    parts = [(parts_x[i], parts_y[i], i) for i in active_block_indices(parts_x) if i < len(parts_y)]
+
+    for attempt in range(1, NEW_GENE_ATTEMPTS + 1):
+        random.shuffle(parts)
+        # Find differing parts
+        for x, y, augment_idx in parts:
+            if x.strip() != y.strip():
+                break
+
+        # Select a template file
+        template_fname = random.choice(['crossover.txt', 'crossover_s.txt'])
+        template_path = f'{ROOT_DIR}/templates/CrossOver/{template_fname}'
+        with open(template_path, 'r') as file:
+            template_txt = file.read()
+
+        # Add code to be augmented (escape braces inside the code blocks)
+        txt2llm = block_note(x) + fill_prompt_template(template_txt, x.strip(), y.strip())
+        # Generate augmented code
+        code_from_llm = generate_augmented_code(txt2llm, augment_idx, apply_quality_control,
+                                                top_p, llm_model, min(temperature + 0.1 * (attempt - 1), 1.0))
+
+        # Do not persist failed LLM outputs (literal "ERROR" / empty).
+        if (not code_from_llm) or str(code_from_llm).strip() == "ERROR":
+            reason = "no valid code from LLM"
+        else:
+            new_parts = list(parts_x)
+            # Insert note if present
+            new_parts[augment_idx] = f"\n{extract_note(parts_x[augment_idx])}{code_from_llm}\n"
+            reason = reject_reason(new_parts, [parts_x, parts_y])
+        if reason is None:
             break
-
-    # Select a template file
-    template_fname = random.choice(['crossover.txt', 'crossover_s.txt'])
-    template_path = f'{ROOT_DIR}/templates/CrossOver/{template_fname}'
-    with open(template_path, 'r') as file:
-        template_txt = file.read()
-
-    # Add code to be augmented (escape braces inside the code blocks)
-    txt2llm = fill_prompt_template(template_txt, x.strip(), y.strip())
-    # Generate augmented code
-    code_from_llm = generate_augmented_code(txt2llm, augment_idx, apply_quality_control,
-                                            top_p, llm_model, temperature)
-    
-    # Do not persist failed LLM outputs (literal "ERROR" / empty).
-    if (not code_from_llm) or str(code_from_llm).strip() == "ERROR":
+        box_print(f"Crossover attempt {attempt}/{NEW_GENE_ATTEMPTS} rejected: {reason}",
+                  print_bbox_len=120, new_line_end=False)
+    else:
         box_print(
-            "Crossover failed: no valid code from LLM; not writing gene file",
+            "Crossover failed: no acceptable code from LLM; not writing gene file",
             print_bbox_len=120,
             new_line_end=False,
         )
         sys.exit(1)
-    
-    # Insert note if present
-    temp_txt = parts_x[augment_idx]
-    note_txt = extract_note(temp_txt)
-    # Update the part with augmented code
-    parts_x[augment_idx] = f"\n{note_txt}{code_from_llm}\n"
+
+    parts_x = new_parts
     # Prepare and write the augmented code to output file
     write_augmented_code(output_filename, parts_x, parts_y)
     box_print(f"Python code saved to {os.path.basename(output_filename)}", print_bbox_len=120, new_line_end=False)
