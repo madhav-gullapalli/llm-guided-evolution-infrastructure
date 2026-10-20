@@ -3,28 +3,24 @@ import numpy as np
 import torch
 from scipy.stats import norm
 
+from naslib.predictors.mlp import MLPPredictor
 from naslib.predictors.trees.xgb import XGBoost
 from naslib.predictors.ensemble import Ensemble
 from naslib.optimizers.discrete.bananas.optimizer import Bananas
 
-
-DEFAULT_SURROGATE_CONFIG = {
-    "name": "xgboost",
-    "embedding_col": "codellama_python_7b_pytorch_code_exclude_helper_embedding",
-    "use_pca": False,
-    "pca_components": 128,
-    "ss_type": "nasbench201",
-    "hparams_from_file": False,
-    "nthread": 4,
-    "device": "cuda",
-    "tree_method": "hist",
-    "num_layers": 3,
-    "layer_width": 128,
-    "batch_size": 32,
-    "lr": 1e-3,
-    "epochs": 200,
-    "loss": "mse",
+# Shared helpers live above the first option marker so mutation/crossover
+# do not overwrite the factory when a family-specific block is edited.
+SURROGATE_REGISTRY = {}
+ALLOWED_SURROGATE_NAMES = ("mlp", "xgboost")
+_CLASS_ALIASES = {
+    "xgboost": ("CustomXGBoost",),
+    "mlp": ("CustomMLP",),
 }
+
+
+def register_surrogate(name, cls):
+    """Add or replace one family without wiping the other."""
+    SURROGATE_REGISTRY[name] = cls
 
 
 def get_surrogate_config(base_cfg=None, **runtime_constants):
@@ -136,6 +132,8 @@ class CustomXGBoost(XGBoost):
         return result
 
 
+register_surrogate("xgboost", CustomXGBoost)
+
 # --OPTION--
 # Evolution-mode constraint: preserve the fixed SurrogateUsageOptimizer.
 SURROGATE_REGISTRY = {
@@ -143,30 +141,4 @@ SURROGATE_REGISTRY = {
 }
 
 
-PREDICTOR_KWARG_KEYS = {
-    "xgboost": (
-        "ss_type",
-        "hparams_from_file",
-        "nthread",
-        "device",
-        "tree_method",
-    ),
-}
-
-
-def build_predictor_kwargs(cfg):
-    name = cfg["name"]
-    if name not in SURROGATE_REGISTRY:
-        raise ValueError(f"Unknown surrogate: {name}")
-    if "corpus_path" not in cfg:
-        raise ValueError("Missing required runtime config: corpus_path")
-
-    predictor_kwargs = {
-        "base_predictor_cls": SURROGATE_REGISTRY[name],
-        "corpus_path": cfg["corpus_path"],
-        "embedding_col": cfg["embedding_col"],
-        "use_pca": cfg["use_pca"],
-        "pca_components": cfg["pca_components"],
-    }
-    predictor_kwargs.update({key: cfg[key] for key in PREDICTOR_KWARG_KEYS[name]})
-    return predictor_kwargs
+register_surrogate("mlp", CustomMLP)

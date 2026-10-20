@@ -19,7 +19,7 @@ from deap import base, creator, tools
 from deap.tools import HallOfFame, ParetoFront
 from functools import partial
 from src.utils.print_utils import print_population, print_scores, box_print, print_job_info
-from src.llm_utils import split_file, retrieve_base_code
+from src.llm_utils import split_file, retrieve_base_code, active_block_indices
 from src.cfg.constants import *
 from src.cfg import constants
 import glob
@@ -142,7 +142,8 @@ def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK,
         top_gene = np.random.choice([x[0] for x in TOP_N_GENES])
         parts_x = split_file(f"{VARIANT_DIR}/{MODEL}_{top_gene}.py")
         parts_y = split_file(SEED_NETWORK)
-        parts = [(x.strip(), y.strip(), idx) for idx, (x, y) in enumerate(zip(parts_x[1:], parts_y[1:]))]
+        parts = [(parts_x[i].strip(), parts_y[i].strip(), i)
+                 for i in active_block_indices(parts_x) if i < len(parts_y)]
         random.shuffle(parts)
         for x, y, augment_idx in parts:
             if x.strip() != y.strip():
@@ -301,6 +302,18 @@ def wait_for_llm_server(timeout=3600, check_interval=10):
     if last_error is not None:
         print(f"\t‣ Last readiness error: {last_error}", flush=True)
     return False
+
+def llm_server_reachable():
+    """Single probe of the local LLM server; wait_for_llm_server caches success and never re-checks."""
+    if not LOCAL_LLM:
+        return True
+    try:
+        with open(HOSTNAME_DIR, 'r') as file:
+            hostname = file.readline().strip()
+        with urllib.request.urlopen(f"http://{hostname}:{PORT}/", timeout=5) as response:
+            return 200 <= response.status < 300
+    except (OSError, ValueError):
+        return False
 
 def submit_bash(file_path, **kwargs):
     """ This should be general for subbing anything and returning:
@@ -1158,14 +1171,25 @@ if __name__ == "__main__":
         population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
 
         box_print("CURRENT POPULATION SIZE:", len(population))
-        if len(population) < num_elites:
-            print(
-                f"Only {len(population)} unique valid individuals are available; "
-                "continuing with the reduced population.",
-                flush=True,
-            )
-        if not population:
-            raise RuntimeError("No valid unique individuals were generated.")
+        while len(population) < num_elites:
+            if not llm_server_reachable():
+                # Raising (not exiting) puts a traceback in the island log, which the controller treats as done.
+                raise RuntimeError("LLM server is unreachable; stopping instead of re-creating the population.")
+            print("MINIMUM NUMBER OF IND NOT ACHIEVED, TRYING AGAIN")
+            GEN_COUNT = -1
+            TOP_N_GENES = None
+            LINKED_GENES = {}
+            GLOBAL_DATA = {}
+            GLOBAL_DATA_HIST = {}
+            GLOBAL_DATA_ANCESTRY = {}
+            start_gen = 0
+            population = toolbox.population(n=start_population_size, llm_model=llm_model)
+            delayed_creation_check(population)
+            for ind in population:
+                ind.fitness.values = PLACEHOLDER_FITNESS
+            check_and_update_fitness(population)
+            population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
+            box_print("CURRENT POPULATION SIZE:", len(population))
 
         # All downstream selection must use the valid population and a
         # bounded elite count.  num_elites is a target, not a requirement

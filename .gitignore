@@ -26,3 +26,17 @@ cifar10
 uv.lock
 pareto_fronts
 */run_job_outputs
+
+# --- added for Surrogate / analysis branch (keep heavy local artifacts out) ---
+sota/Surrogate/naslib/data/*.pickle
+sota/Surrogate/run_nb201/
+sota/Surrogate/data/
+sota/Surrogate/slurm_logs/
+surrogate_islands_run/
+old_surrogate_islands_run*/
+run_job_outputs/
+tmp/
+cifar-10-batches-py/
+cifar-10-python.tar.gz
+hostname.log
+.venv/

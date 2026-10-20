@@ -31,6 +31,11 @@ from src.cfg.constants_surrogate import (
 )
 
 from trajectory_plots import surrogate_data_plots
+from analysis import (
+    records_from_candidate_log,
+    records_from_test_set,
+    write_prediction_analysis,
+)
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
@@ -42,6 +47,8 @@ parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Mod
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
 parser.add_argument("--coevolution", action="store_true", help="Keep the paired usage optimizer policy")
+parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
+parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
 _coevolution = custom_args.coevolution
 
@@ -220,7 +227,7 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
             index += int(op) * (5 ** i)
         return index
     for i, c in enumerate(candidates):
-
+        c.predicted_accuracy = float(mean_preds[i])
         arch_index = compute_nb201_index(c.arch.op_indices)
         true_accuracy = c.arch.query(
             metric=Metric.VAL_ACCURACY,
@@ -231,7 +238,7 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
             "generation": int(self.current_epoch),
             "arch_index": int(arch_index),
             "op_indices": list(map(int, c.arch.op_indices)),
-            "predicted_accuracy": float(mean_preds[i]),
+            "predicted_accuracy": c.predicted_accuracy,
             "acquisition_value": float(acq_values[i]),
             "selected": bool(i in selected_indices),
             "true_accuracy": float(true_accuracy) if true_accuracy is not None else None
@@ -291,36 +298,98 @@ def debug_new_epoch(self, epoch):
             print(f"[Debug] Selection finished in {t4-t3:.2f}s")
             
             # Compute Kendall Tau on test set (only when ensemble is retrained)
-            pred_scores = self.ensemble.query(self.test_data)  # Shape: (num_ensemble, num_test)
-            # Aggregate ensemble predictions by taking mean across ensemble members
-            mean_pred_scores = np.mean(pred_scores, axis=0)  # Shape: (num_test,)
-            
-            # Calculate Kendall Tau (Ranking Correlation)
-            tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
-            
-            # Calculate MSE (Mean Squared Error)
-            mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
-            
-            # Log the metrics
-            self.surrogate_test_metrics.append(tau)
-            self.surrogate_test_metrics_mse.append(mse)
-            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
+            log_surrogate_test_metrics(self, epoch)
 
         # 5. Evaluation
         print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
         t5 = time.time()
         model = self.next_batch.pop()
         self._set_scores(model)
-        if not hasattr(self, "trajectory"):
-            self.trajectory = []
-
-        self.trajectory.append({
-            "op_indices": getattr(model, "op_indices", None),
-            "generation": epoch,
-            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
-            "true_accuracy": model.accuracy
-        })
+        log_trajectory_point(self, model, epoch)
         print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
+
+
+def log_surrogate_test_metrics(self, epoch):
+    """Score self.ensemble on the held-out test set; this is the gene's fitness signal."""
+    from scipy.stats import kendalltau
+    pred_scores = self.ensemble.query(self.test_data)  # Shape: (num_ensemble, num_test)
+    # Aggregate ensemble predictions by taking mean across ensemble members
+    mean_pred_scores = np.mean(pred_scores, axis=0)  # Shape: (num_test,)
+    
+    # Calculate Kendall Tau (Ranking Correlation)
+    tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
+    
+    # Calculate MSE (Mean Squared Error)
+    mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
+    
+    # Log the metrics
+    self.surrogate_test_metrics.append(tau)
+    self.surrogate_test_metrics_mse.append(mse)
+    print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
+    if not hasattr(self, "test_prediction_log"):
+        self.test_prediction_log = []
+    self.test_prediction_log.extend(
+        records_from_test_set(
+            self.test_data,
+            self.test_accuracies,
+            mean_pred_scores,
+            inner_epoch=epoch,
+            gene_id=gene_id,
+            parent_gene=args.parent_gene,
+            outer_generation=args.outer_generation,
+            seed=config.search.seed,
+            trial=getattr(args, "trial", 0),
+        )
+    )
+
+
+def log_trajectory_point(self, model, epoch):
+    if not hasattr(self, "trajectory"):
+        self.trajectory = []
+
+    arch = getattr(model, "arch", model)
+    op_indices = getattr(arch, "op_indices", None)
+    if op_indices is not None:
+        op_indices = list(map(int, op_indices))
+    predicted = getattr(model, "predicted_accuracy", None)
+    if predicted is not None:
+        predicted = float(predicted)
+    self.trajectory.append({
+        "op_indices": op_indices,
+        "generation": epoch,
+        "predicted_accuracy": predicted,
+        "true_accuracy": model.accuracy
+    })
+
+
+def instrument_usage_optimizer(optimizer):
+    """
+    Wrap an evolved SurrogateUsageOptimizer so fitness is measured outside the
+    evolvable code: score the ensemble whenever the gene refits it, and record
+    every architecture the gene evaluates after the initial random samples.
+    """
+    if type(optimizer).new_epoch is debug_new_epoch:
+        return  # gene kept the inherited new_epoch, which already logs metrics
+
+    gene_new_epoch = optimizer.new_epoch
+    state = {"ensemble": None, "n_train": 0}
+
+    def measured_new_epoch(epoch):
+        optimizer.current_epoch = epoch
+        gene_new_epoch(epoch)
+
+        ensemble = getattr(optimizer, "ensemble", None)
+        if ensemble is not None and ensemble is not state["ensemble"]:
+            state["ensemble"] = ensemble
+            log_surrogate_test_metrics(optimizer, epoch)
+
+        new_models = optimizer.train_data[state["n_train"]:]
+        state["n_train"] = len(optimizer.train_data)
+        if epoch >= optimizer.num_init:
+            for model in new_models:
+                log_trajectory_point(optimizer, model, epoch)
+
+    optimizer.new_epoch = measured_new_epoch
 
 # Apply the patch
 if not _coevolution:
@@ -417,6 +486,7 @@ print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
+    args.trial = i
     config.search.seed = args.seed*(i+1)
     config.seed = config.search.seed
     
@@ -432,8 +502,21 @@ for i in range(NUM_TRIALS):
         set_config_save()
 
         # 1. Select Optimizer
+        # USE-mode genes define SurrogateUsageOptimizer; SURROGATE-mode genes (model.py) do not.
+        usage_optimizer_cls = getattr(_model_module, "SurrogateUsageOptimizer", None)
+        use_evolved_usage = (
+            optimizer_name == "bananas"
+            and p_name == "LLM_NB201_Predictor"
+            and usage_optimizer_cls is not None
+        )
         if optimizer_name == "rea":
             optimizer = RegularizedEvolution(config)
+        elif use_evolved_usage:
+            print(f"Using evolved usage strategy: {usage_optimizer_cls.__name__}")
+            optimizer = usage_optimizer_cls(
+                config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
+            )
+            instrument_usage_optimizer(optimizer)
         elif optimizer_name == "bananas":
             # The evolved module supplies the complete surrogate-usage
             # strategy behind this single optimizer boundary.
@@ -456,7 +539,9 @@ for i in range(NUM_TRIALS):
 
         
         # 3. INJECT CUSTOM PREDICTOR
-        if predictor_cls is not None:
+        if use_evolved_usage:
+            pass  # the evolved optimizer builds its own ensemble from predictor_cls
+        elif predictor_cls is not None:
             print(f"Injecting Custom Predictor: {p_name}")
             
             if optimizer_name == "bananas":
@@ -500,6 +585,35 @@ for i in range(NUM_TRIALS):
             print(f"Candidate log saved to {candidate_path}")
         else:
             print("No candidate_log found on optimizer.")
+
+        analysis_records = []
+        if hasattr(optimizer, "test_prediction_log"):
+            analysis_records.extend(optimizer.test_prediction_log)
+        if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
+            analysis_records.extend(
+                records_from_candidate_log(
+                    optimizer.candidate_log,
+                    gene_id=gene_id,
+                    parent_gene=args.parent_gene,
+                    outer_generation=args.outer_generation,
+                    seed=config.search.seed,
+                    trial=i,
+                )
+            )
+        if analysis_records:
+            analysis_dir = os.path.join(config.save, "analysis")
+            analysis_paths = write_prediction_analysis(
+                analysis_records,
+                analysis_dir,
+                stem=f"predictions_trial_{i}_seed_{config.search.seed}",
+                title=f"{gene_id} trial {i} seed {config.search.seed}",
+            )
+            print(
+                f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
+            )
+            print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
+        else:
+            print("No prediction records found for analysis table.")
         # Retrieve the stored metrics
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics_tau = optimizer.surrogate_test_metrics

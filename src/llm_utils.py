@@ -1,4 +1,6 @@
 import argparse
+import ast
+import functools
 import sys
 sys.path.append("src")
 import re
@@ -23,7 +25,24 @@ from transformers import AutoTokenizer
 from google import genai
 from google.genai import types
 
-LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "900"))
+def fill_prompt_template(template_txt, *args):
+    """Fill positional ``{}`` placeholders without ``str.format`` brace conflicts.
+
+    Gene / option-block code often contains dict literals like
+    ``{"name": "mlp"}``. Using ``str.format`` treats those braces as fields and
+    raises ``KeyError``. Replace one ``{}`` at a time instead so braces in the
+    inserted code are preserved exactly.
+    """
+    out = template_txt
+    for arg in args:
+        if "{}" not in out:
+            raise ValueError(
+                f"Prompt template has fewer '{{}}' placeholders than arguments "
+                f"({len(args)} args)."
+            )
+        out = out.replace("{}", str(arg), 1)
+    return out
+
 
 def retrieve_base_code(idx):
     """Retrieves base code for quality control."""
@@ -31,23 +50,15 @@ def retrieve_base_code(idx):
     return split_file(base_network)[1:][idx].strip()
 
 def clean_code_from_llm(code_from_llm):
-    """Extract generated code while preserving as many usable responses as possible."""
-    if not isinstance(code_from_llm, str):
-        return ""
-    # Accept multiple fenced blocks but keep only one candidate.  Selecting
-    # the longest block favors the complete implementation and avoids
-    # accidentally combining repeated or contradictory code.
-    blocks = re.findall(r"```[^\n]*\n?(.*?)```", code_from_llm,
-                       flags=re.DOTALL)
-    if blocks:
-        non_empty_blocks = [block.strip() for block in blocks if block.strip()]
-        code = max(non_empty_blocks, key=len, default="")
-    else:
-        # Be permissive when the model omits Markdown fences entirely.
-        code = code_from_llm.strip()
-    if not code:
-        return ""
-    return code
+    """Cleans the code received from LLM."""
+    try:
+        # Extract and clean code assuming it is enclosed in triple backticks
+        return '\n'.join(code_from_llm.strip().split("```")[1].split('\n')[1:]).strip()
+    except (IndexError, AttributeError) as e:
+        # Print an error message if the code extraction fails
+        print("Runtime Error: No code was generated or the format is incorrect.")
+        return "ERROR"  # Return ERROR
+        #return ""
 
 def get_llm_code_generator(llm_model):
     # Prefer the local uvicorn-hosted model when configured
@@ -96,42 +107,35 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
     """Generates augmented code using Mixtral."""
     print("LLM being used: ", llm_model)
     box_print("PROMPT TO LLM", print_bbox_len=60, new_line_end=False)
+    print(txt2llm, flush=True)
+    
     llm_code_generator, qc_func = get_llm_code_generator(llm_model)
-    output_contract = (
-        "\n\nWrite a thorough explanation, then immediately write the generated code EXACTLY "
-        "ONCE IN FULL based on your analysis, no other code, no repeats, no nonsense. "
-        "Put the complete generated code in exactly one Markdown Python code fence. "
-        "Do not write any other code fence or split the code into separate blocks.\n"
-    )
-    generation_prompt = txt2llm + output_contract
-    # Log the exact prompt sent to the server, including the output contract.
-    print(generation_prompt, flush=True)
     
     if apply_quality_control:
         base_code = retrieve_base_code(augment_idx)
-        code_from_llm, generate_text = llm_code_generator(generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+        code_from_llm, generate_text = llm_code_generator(txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
         temp, counter = None, 0 #default to run the quality control
         while counter < max_gen_attempts and (temp not in ["NC", "OOT", "MS", "ERROR"]): #counter to deal with stubborn 
             if temp == "NC": #regenerate based on error
                 prefix = "The code you generated did not contain a code output of the changes you mentioned. Make sure to include the altered code in your output.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "OOT":
                 prefix = "The output you gave was cut short due to a limited number of tokens. Shorten your output to just include the altered code without the explanation.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "MS":
                 prefix = "The code you generated was in multiple segments. When you output your altered code make sure it is in a single, complete code segment including the changes you made.\n"
-                code_from_llm, generate_text = llm_code_generator(prefix + generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+                code_from_llm, generate_text = llm_code_generator(prefix + txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
             elif temp == "ERROR": #another unforseen error
-                code_from_llm, generate_text = llm_code_generator(generation_prompt, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens) #just retry
+                code_from_llm, generate_text = llm_code_generator(txt2llm, return_gen=True, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens) #just retry
             
             temp = qc_func(code_from_llm, base_code, generate_text)
             counter += 1
         
-        if temp not in ["NC", "OOT", "MS", "ERROR"]:
+        if temp != "NC" or temp != "OOT" or temp != "MS":
             return base_code
 
     else:
-        code_from_llm = llm_code_generator(generation_prompt, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
+        code_from_llm = llm_code_generator(txt2llm, top_p=top_p, temperature=temperature, max_new_tokens=max_new_tokens)
         box_print("TEXT FROM LLM", print_bbox_len=60, new_line_end=False)
         
         print(code_from_llm)
@@ -141,7 +145,7 @@ def generate_augmented_code(txt2llm, augment_idx, apply_quality_control, top_p, 
 
     print(code_from_llm)
     
-    return code_from_llm
+    return code_from_llm 
 
 def extract_note(txt):
     """Extracts note from the part if present."""
@@ -157,10 +161,192 @@ def split_file(filename):
     # Regular expression for the pattern
     pattern = r"# --OPTION--"
     parts = re.split(pattern, content)
-    if len(parts) == 1:
-        parts = ["", content]
 
     return parts
+
+
+# Attempts per mutation/crossover job before giving up without writing a gene file.
+NEW_GENE_ATTEMPTS = 3
+
+_FAMILY_CLASSES = {"mlp": "CustomMLP", "xgboost": "CustomXGBoost"}
+# NASLib's MLPPredictor.fit only builds a loss for these names.
+_MLP_LOSSES = ("mse", "mae")
+# Keys build_predictor_kwargs in the surrogate seed reads with cfg[...].
+_SHARED_CONFIG_KEYS = {"name", "embedding_col", "use_pca", "pca_components"}
+_REQUIRED_CONFIG_KEYS = {
+    "mlp": _SHARED_CONFIG_KEYS | {"num_layers", "layer_width", "batch_size", "lr", "epochs", "loss"},
+    "xgboost": _SHARED_CONFIG_KEYS | {"ss_type", "hparams_from_file", "nthread", "device", "tree_method"},
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _embedding_columns():
+    """Embedding column names in the surrogate corpus CSV header, or None if it cannot be read."""
+    try:
+        with open(SURROGATE_CORPUS_PATH) as f:
+            return tuple(c.strip().strip('"') for c in f.readline().split(",") if c.strip().strip('"').endswith("_embedding"))
+    except (OSError, NameError):
+        return None
+
+
+def _config_note():
+    columns = _embedding_columns()
+    column_rule = f' "embedding_col" must be one of: {", ".join(columns)}.' if columns else ""
+    return (
+        'Note: only the surrogate family named by "name" runs. With "mlp", only these keys have any effect: '
+        "embedding_col, use_pca, pca_components, num_layers, layer_width, batch_size, lr, epochs, loss. "
+        'With "xgboost", only: embedding_col, use_pca, pca_components, ss_type, hparams_from_file, nthread, '
+        "device, tree_method, max_depth, min_child_weight, colsample_bytree, xgb_learning_rate, colsample_bylevel. "
+        "All other keys are ignored. Keep the variable name DEFAULT_SURROGATE_CONFIG and every existing key; "
+        f'only change values. "name" must be "mlp" or "xgboost". "loss" must be "mse" or "mae".{column_rule}'
+    )
+
+
+_BLOCK_NOTES = {
+    "DEFAULT_SURROGATE_CONFIG": _config_note,
+    "class CustomMLP": (
+        "Note: CustomMLP wraps NASLib's MLPPredictor, which only reads these hyperparameters: "
+        "num_layers, layer_width, batch_size, lr, regularization (epochs and loss are passed to fit). "
+        "Other names such as hidden_layers, dropout, activation, or learning_rate are silently ignored. "
+        'The loss passed to MLPPredictor.fit must be the string "mse" or "mae"; loss objects or other names crash.'
+    ),
+}
+
+
+def active_block_indices(parts):
+    """Indices (>= 1) of the option blocks that affect the gene's behavior.
+
+    In the dual-family surrogate seed only the config block and the class named by
+    DEFAULT_SURROGATE_CONFIG["name"] run; the other family's class is dead code.
+    Files without that layout (e.g. the USE-mode seed) keep every block.
+    """
+    blocks = list(range(1, len(parts)))
+    config_idx = next((i for i in blocks if "DEFAULT_SURROGATE_CONFIG" in parts[i]), None)
+    if config_idx is None:
+        return blocks
+    match = re.search(r'["\']name["\']\s*:\s*["\'](\w+)["\']', parts[config_idx])
+    family_cls = _FAMILY_CLASSES.get(match.group(1)) if match else None
+    family_idx = next((i for i in blocks if family_cls and f"class {family_cls}" in parts[i]), None)
+    if family_idx is None:
+        return blocks
+    return [config_idx, family_idx]
+
+
+def block_note(code):
+    """Prompt prefix telling the LLM which settings in this block actually take effect."""
+    return "".join(f"{note() if callable(note) else note}\n\n" for marker, note in _BLOCK_NOTES.items() if marker in code)
+
+
+def _strip_docstrings(tree):
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return tree
+
+
+def _active_code(parts):
+    """Active code with comments, docstrings, and formatting removed."""
+    code = "\n".join([parts[0]] + [parts[i] for i in active_block_indices(parts)])
+    try:
+        return ast.dump(_strip_docstrings(ast.parse(code)))
+    except SyntaxError:
+        return "\n".join(line.split("#")[0].strip() for line in code.splitlines() if line.split("#")[0].strip())
+
+
+def _top_level_classes(code):
+    try:
+        return {node.name for node in ast.parse(code).body if isinstance(node, ast.ClassDef)}
+    except SyntaxError:
+        return set()
+
+
+def _surrogate_config(code):
+    """DEFAULT_SURROGATE_CONFIG as {key: value node}; None if never assigned, False if not a plain dict literal."""
+    found = None
+    for node in ast.parse(code).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "DEFAULT_SURROGATE_CONFIG" for t in node.targets):
+            found = False
+            if isinstance(node.value, ast.Dict) and all(isinstance(k, ast.Constant) for k in node.value.keys):
+                found = {k.value: v for k, v in zip(node.value.keys, node.value.values)}
+    return found
+
+
+def _config_reject_reason(code, parent_code):
+    """Why the gene's config would crash evaluation, or None."""
+    parent_cfg = _surrogate_config(parent_code)
+    if not parent_cfg:
+        return None
+    cfg = _surrogate_config(code)
+    if cfg is None:
+        return "DEFAULT_SURROGATE_CONFIG removed or renamed"
+    if cfg is False:
+        return None
+    values = {k: v.value for k, v in cfg.items() if isinstance(v, ast.Constant)}
+    if "name" in values and values["name"] not in _FAMILY_CLASSES:
+        return f'config "name" must be one of {list(_FAMILY_CLASSES)}, got {values["name"]!r}'
+    required = _REQUIRED_CONFIG_KEYS.get(values.get("name"), _SHARED_CONFIG_KEYS)
+    missing = (required & set(parent_cfg)) - set(cfg)
+    if missing:
+        return f"config key(s) removed: {', '.join(sorted(missing))}"
+    if values.get("name") == "mlp" and "loss" in values and values["loss"] not in _MLP_LOSSES:
+        return f'config "loss" must be one of {list(_MLP_LOSSES)}, got {values["loss"]!r}'
+    columns = _embedding_columns()
+    if columns and "embedding_col" in values and values["embedding_col"] not in columns:
+        return f'config "embedding_col" {values["embedding_col"]!r} is not a corpus column'
+    return None
+
+
+def _mlp_fit_reject_reason(code):
+    """Why CustomMLP would pass MLPPredictor.fit a loss it cannot build, or None."""
+    cls = next((n for n in ast.parse(code).body if isinstance(n, ast.ClassDef) and n.name == "CustomMLP"), None)
+    if cls is None:
+        return None
+    def builds_object(v):
+        return isinstance(v, ast.Call) and not (isinstance(v.func, ast.Attribute) and v.func.attr == "get")
+
+    call_valued = {t.id for n in ast.walk(cls) if isinstance(n, ast.Assign) and builds_object(n.value)
+                   for t in n.targets if isinstance(t, ast.Name)}
+    for node in ast.walk(cls):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "fit"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "loss":
+                continue
+            v = kw.value
+            if isinstance(v, ast.Call) and not builds_object(v) and len(v.args) > 1:
+                v = v.args[1]
+            if isinstance(v, ast.Constant) and v.value not in _MLP_LOSSES:
+                return f'CustomMLP passes loss={v.value!r} to fit; must be one of {list(_MLP_LOSSES)}'
+            if builds_object(v) or (isinstance(v, ast.Name) and v.id in call_valued):
+                return "CustomMLP passes a loss object to fit; MLPPredictor only accepts a loss name"
+    return None
+
+
+def reject_reason(new_parts, parent_parts_list):
+    """Why a generated gene should not be evaluated, or None if it is acceptable.
+
+    Rejects genes that do not parse, drop a class their first parent defines (eval.py looks
+    classes up by name, e.g. SurrogateUsageOptimizer), break DEFAULT_SURROGATE_CONFIG or the
+    CustomMLP loss in a way that crashes evaluation, or whose active code is identical to a parent's.
+    """
+    code = "# --OPTION--".join(new_parts)
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        return f"syntax error: {e.msg} (line {e.lineno})"
+    parent_code = "# --OPTION--".join(parent_parts_list[0])
+    missing = _top_level_classes(parent_code) - _top_level_classes(code)
+    if missing:
+        return f"removed or renamed class(es): {', '.join(sorted(missing))}"
+    config_problem = _config_reject_reason(code, parent_code) or _mlp_fit_reject_reason(code)
+    if config_problem:
+        return config_problem
+    new_active = _active_code(new_parts)
+    if any(new_active == _active_code(p) for p in parent_parts_list):
+        return "active code identical to parent"
+    return None
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -178,7 +364,7 @@ def llm_code_qc(code_from_llm, base_code, generate_text):
     with open(template_path, 'r') as file:
         template_txt = file.read()
     # add code to be augmented
-    prompt2llm = template_txt.format(code_from_llm, base_code)
+    prompt2llm = fill_prompt_template(template_txt, code_from_llm, base_code)
     print("="*120);print(prompt2llm);print("="*120)
     
     res = generate_text(prompt2llm) # clean txt
@@ -194,7 +380,7 @@ def llm_code_qc_hf(code_from_llm, base_code, generate_text=None):
     with open(template_path, 'r') as file:
         template_txt = file.read()
     # add code to be augmented
-    prompt2llm = template_txt.format(code_from_llm, base_code)
+    prompt2llm = fill_prompt_template(template_txt, code_from_llm, base_code)
     box_print("QC PROMPT TO LLM", print_bbox_len=120, new_line_end=False)
     print(prompt2llm)
     
@@ -553,9 +739,13 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
     print(llm_hostname)
 
     server_url = f"http://{llm_hostname}:{PORT}/generate"
+    # Cap wait so mutation jobs do not hang for hours on a stuck/CPU server.
+    request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "2700"))  # seconds
     
     try:
-        response = requests.post(server_url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT)
+        response = requests.post(
+            server_url, headers=headers, json=payload, timeout=request_timeout
+        )
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")
@@ -568,9 +758,6 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
             print(f"Error: {response.status_code}")
             print(response.text)
             return None
-    except requests.exceptions.Timeout:
-        print(f"Request timed out after {LLM_REQUEST_TIMEOUT}s: {server_url}")
-        return None
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
         return None
@@ -587,9 +774,12 @@ def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature
     print(os.getenv("SERVER_HOSTNAME", "localhost"))
 
     headers = {"Content-Type": "application/json"}
+    request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "2700"))
     
     try:
-        response = requests.post(server_url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT)
+        response = requests.post(
+            server_url, headers=headers, json=payload, timeout=request_timeout
+        )
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")
@@ -602,9 +792,6 @@ def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature
             print(f"Error: {response.status_code}")
             print(response.text)
             return None
-    except requests.exceptions.Timeout:
-        print(f"Request timed out after {LLM_REQUEST_TIMEOUT}s: {server_url}")
-        return None
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
         return None

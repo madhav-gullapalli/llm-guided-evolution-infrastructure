@@ -26,7 +26,9 @@ from deap.tools import emo
 # Default to the project's standard fitness weights. We avoid importing the
 # project module directly to keep this script self-contained and to prevent
 # environments without those dependencies from failing during import.
-FITNESS_WEIGHTS = (1.0, -1.0)
+# Surrogate islands use 3 objectives: max Kendall τ, min MSE, min runtime.
+# (Older ExquisiteNet / 2-obj runs should override via code if needed.)
+FITNESS_WEIGHTS = (1.0, -1.0, -1.0)
 
 
 @dataclass

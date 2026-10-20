@@ -1,7 +1,10 @@
-import numpy as np
-import pandas as pd
+import hashlib
 import json
+import os
 import traceback
+from pathlib import Path
+
+import numpy as np
 from sklearn.decomposition import PCA
 
 # NASLib Utilities for NASBench201
@@ -16,81 +19,144 @@ class EmbeddingCacheLoader:
     Singleton loader for pre-computed embeddings from CSV/Pickle file for NASBench201.
     Replaces online LLM inference with O(1) cache lookups.
     Implemented as singleton to avoid loading the corpus multiple times.
+
+    The raw COLE CSV is ~5GB of text (code + several embedding columns). Loading it
+    with pandas OOMs gene-eval jobs. We stream only arch_string + the requested
+    column, then write a compact npz next to the evaluator for later runs.
     """
     _instance = None
     _cache = {}
-    
+    _CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "embedding_cache"
+
     def __new__(cls, corpus_path=None, embedding_col='codellama_python_7b_pytorch_code_embedding'):
         if cls._instance is None:
             cls._instance = super(EmbeddingCacheLoader, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self, corpus_path=None, embedding_col='codellama_python_7b_pytorch_code_embedding'):
         if self._initialized:
             return
-        
+
         if corpus_path is None:
             raise ValueError("corpus_path must be provided on first initialization")
-        
+
         self.corpus_path = corpus_path
         self.embedding_col = embedding_col
         self._load_corpus()
         self._initialized = True
-    
+
+    def _npz_path(self) -> Path:
+        key = hashlib.sha1(f"{self.corpus_path}|{self.embedding_col}".encode()).hexdigest()[:16]
+        return self._CACHE_DIR / f"nb201_{key}.npz"
+
+    @staticmethod
+    def _parse_embedding(val):
+        if isinstance(val, (np.ndarray, list)):
+            return np.asarray(val, dtype=np.float32)
+
+        val_str = str(val).strip()
+        if "," in val_str:
+            try:
+                return np.asarray(json.loads(val_str), dtype=np.float32)
+            except Exception:
+                pass
+
+        cleaned = val_str.replace("[", "").replace("]", "").replace("\n", " ").strip()
+        parsed = np.fromstring(cleaned, sep=" ", dtype=np.float32)
+        if parsed.size:
+            return parsed
+        from ast import literal_eval
+        return np.asarray(literal_eval(val_str), dtype=np.float32)
+
+    def _load_npz(self, path: Path):
+        print(f"[Cache Loader] Loading compact cache {path} ...", flush=True)
+        data = np.load(path, allow_pickle=True)
+        keys = data["arch_strings"]
+        embs = data["embeddings"]
+        EmbeddingCacheLoader._cache = {str(k): embs[i] for i, k in enumerate(keys)}
+        print(f"[Cache Loader] Successfully loaded {len(EmbeddingCacheLoader._cache)} embeddings.", flush=True)
+
+    def _save_npz(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        keys = np.array(list(EmbeddingCacheLoader._cache.keys()), dtype=object)
+        embs = np.stack(list(EmbeddingCacheLoader._cache.values()))
+        tmp = path.with_name(path.stem + "_tmp.npz")
+        np.savez(tmp, arch_strings=keys, embeddings=embs)
+        os.replace(tmp, path)
+        print(f"[Cache Loader] Wrote compact cache ({embs.nbytes / 1e6:.1f} MB arrays) to {path}", flush=True)
+
+    def _load_csv_streaming(self, csv_path: str):
+        import csv
+
+        print(
+            f"[Cache Loader] Streaming {csv_path} column {self.embedding_col!r} "
+            "(do not pandas-read the full 4.8GB file)...",
+            flush=True,
+        )
+        cache = {}
+        with open(csv_path, newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader)
+            try:
+                arch_idx = header.index("arch_string")
+                emb_idx = header.index(self.embedding_col)
+            except ValueError as exc:
+                raise ValueError(
+                    f"CSV missing required column. Have {header}. Need arch_string and {self.embedding_col}."
+                ) from exc
+
+            for i, row in enumerate(reader, start=1):
+                cache[row[arch_idx]] = self._parse_embedding(row[emb_idx])
+                if i % 1000 == 0:
+                    print(f"[Cache Loader] ... {i} architectures", flush=True)
+
+        EmbeddingCacheLoader._cache = cache
+        print(f"[Cache Loader] Successfully loaded {len(cache)} embeddings from CSV.", flush=True)
+
     def _load_corpus(self):
-        """Load embeddings from CSV/Pickle and build arch_string -> embedding cache"""
-        print(f"[Cache Loader] Loading embeddings from {self.corpus_path}...")
-        
+        """Load embeddings from compact npz, pickle, or streamed CSV."""
+        npz_path = self._npz_path()
+        print(f"[Cache Loader] Requested corpus: {self.corpus_path}", flush=True)
+        print(f"[Cache Loader] Compact cache path: {npz_path}", flush=True)
+
         try:
-            # Handle Pickle vs CSV
-            if self.corpus_path.endswith('.pkl'):
-                df = pd.read_pickle(self.corpus_path)
+            if npz_path.is_file():
+                self._load_npz(npz_path)
+                return
+
+            src = self.corpus_path
+            if src.endswith(".npz"):
+                self._load_npz(Path(src))
+                return
+            if src.endswith(".pkl"):
+                import pandas as pd
+
+                print(f"[Cache Loader] Loading pickle {src} ...", flush=True)
+                df = pd.read_pickle(src)
+                EmbeddingCacheLoader._cache = {
+                    k: self._parse_embedding(v)
+                    for k, v in zip(df["arch_string"], df[self.embedding_col])
+                }
+                print(
+                    f"[Cache Loader] Successfully loaded {len(EmbeddingCacheLoader._cache)} embeddings.",
+                    flush=True,
+                )
             else:
-                df = pd.read_csv(self.corpus_path)
-            
-            # Parse embeddings - handle both JSON strings and numpy arrays
-            def parse_embedding(val):
-                if isinstance(val, (np.ndarray, list)):
-                    return np.array(val, dtype=np.float32)
-                
-                val_str = str(val).strip()
-                
-                # Try JSON format (comma-separated)
-                if ',' in val_str:
-                    try:
-                        return np.array(json.loads(val_str), dtype=np.float32)
-                    except:
-                        pass
-                
-                # Try numpy string format (space-separated)
-                cleaned = val_str.replace('[', '').replace(']', '').replace('\n', ' ').strip()
-                try:
-                    return np.fromstring(cleaned, sep=' ', dtype=np.float32)
-                except Exception:
-                    # Final fallback: literal_eval
-                    from ast import literal_eval
-                    return np.array(literal_eval(val_str), dtype=np.float32)
-            
-            # Build cache: arch_string -> embedding (use class-level cache)
-            EmbeddingCacheLoader._cache = {
-                k: parse_embedding(v)
-                for k, v in zip(df['arch_string'], df[self.embedding_col])
-            }
-            
-            print(f"[Cache Loader] Successfully loaded {len(EmbeddingCacheLoader._cache)} embeddings.")
-            
+                self._load_csv_streaming(src)
+
+            self._save_npz(npz_path)
         except Exception as e:
-            print(f"[Cache Loader] ERROR loading corpus: {e}")
+            print(f"[Cache Loader] ERROR loading corpus: {e}", flush=True)
             traceback.print_exc()
             EmbeddingCacheLoader._cache = {}
-    
+
     def get_embedding(self, arch_string):
         """Retrieve embedding for a single architecture string"""
         if arch_string not in EmbeddingCacheLoader._cache:
             raise ValueError(f"Architecture not found in cache: {arch_string}")
         return EmbeddingCacheLoader._cache[arch_string]
-    
+
     def get_embeddings(self, arch_strings):
         """Retrieve embeddings for multiple architecture strings"""
         embeddings = []
