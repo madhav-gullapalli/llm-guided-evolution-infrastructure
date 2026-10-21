@@ -1,6 +1,7 @@
 """Focused MVP acceptance tests; external LLM/Slurm/NAS work is stubbed."""
 import copy
 import importlib.util
+import pickle
 import random
 import shlex
 import subprocess
@@ -13,7 +14,8 @@ import pytest
 from deap import base
 
 from src.coevolution import (PairRecord, barrier_passes, random_uniform_coverage,
-                             rank_pairs, rank_statistics)
+                             rank_pairs, rank_statistics, SearchFitness,
+                             INVALID_SEARCH_FITNESS, best_search_accuracy)
 from src.source_composition import compose_sources
 
 REPO = Path(__file__).resolve().parents[1]
@@ -24,6 +26,20 @@ class ObjectiveFitness(base.Fitness):
 
 
 INVALID = (-float("inf"), float("inf"))
+
+
+def test_search_objective_rewards_best_accuracy():
+    # A high early accuracy counts, and samples beyond the budget do not.
+    assert best_search_accuracy([95.0] + [90.0] * 99 + [100.0]) == 95.0
+    with pytest.raises(ValueError):
+        best_search_accuracy([90.0] * 99)
+    with pytest.raises(ValueError):
+        best_search_accuracy([90.0] * 99 + [float("nan")])
+    records = [PairRecord(str(i), {"surrogate": str(i)}, (0.8, accuracy),
+                          SearchFitness, INVALID_SEARCH_FITNESS)
+               for i, accuracy in enumerate([90.0, 95.0])]
+    ranks = rank_pairs(records, {"surrogate": ["0", "1"]})
+    assert ranks == {"surrogate": {"0": 1, "1": 0}}
 
 
 @pytest.mark.parametrize("a,b,kappa,matches", [(12, 12, 2, 36), (4, 7, 3, 22),
@@ -180,6 +196,17 @@ def test_joint_smoke_selection_checkpoint_resume(local_jobs, tmp_path, monkeypat
     assert start == 2
     assert len(evaluation_calls) == 9
     assert len(llm_calls) == 6
+    with (root / "global_data/global_gen_1.pkl").open("rb") as file:
+        global_data = pickle.load(file)
+    match_data = {gene: info for gene, info in global_data["GLOBAL_DATA"].items()
+                  if gene.startswith("coev_")}
+    assert len(match_data) == 9
+    assert all(info["fitness"] == (0.9, 1.0) for info in match_data.values())
+    assert all(set(info["source_ids"]) == {"surrogate", "usage"}
+               for info in match_data.values())
+    assert global_data["phase"] == "selected"
+    assert set(global_data["workers"]) == {"surrogate", "usage"}
+    assert len(list((root / "intermediate/generation_1").glob("*.pkl"))) == 6
     assert all(len(w["elites"]) == 2 for w in checkpoint["workers"].values())
     assert all(not ind.fitness.valid for w in checkpoint["workers"].values()
                for ind in w["population"] + w["parents"] + w["elites"])
@@ -198,6 +225,34 @@ def test_joint_smoke_selection_checkpoint_resume(local_jobs, tmp_path, monkeypat
             assert source.parent == destination.parent
         if call.get("input_filename_y"):
             assert Path(call["input_filename_y"]).parent == destination.parent
+
+
+def test_interrupted_evaluation_preserves_job_metadata(local_jobs, tmp_path, monkeypatch):
+    coev, _, _ = local_jobs
+    settings = copy.deepcopy(coev.config.POPULATIONS)
+    for cfg in settings.values():
+        cfg.update(start_population_size=3, population_size=3, num_elites=2)
+    monkeypatch.setattr(coev.config, "POPULATIONS", settings)
+    monkeypatch.setattr(coev.config, "matches", 9)
+    monkeypatch.setattr(coev.config, "kappa", 1)
+
+    def interrupted(individuals):
+        coev.legacy.GLOBAL_DATA[individuals[0][0]].update(job_id="saved-job", status="running eval")
+        raise RuntimeError("evaluation interrupted")
+
+    monkeypatch.setattr(coev.legacy, "check_and_update_fitness", interrupted)
+    original = coev.legacy.GLOBAL_DATA
+    root = tmp_path / "interrupted"
+    with pytest.raises(RuntimeError, match="evaluation interrupted"):
+        coev.run(root)
+    assert coev.legacy.GLOBAL_DATA is original
+    assert not (root / "checkpoint_gen_1.pkl").exists()
+    with (root / "global_data/global_gen_1.pkl").open("rb") as file:
+        data = pickle.load(file)
+    assert data["phase"] == "evaluation"
+    assert any(info.get("job_id") == "saved-job" for info in data["GLOBAL_DATA"].values())
+    assert list((root / "intermediate/generation_1").glob("*matches_composed*.pkl"))
+    assert list((root / "intermediate/generation_1").glob("*evaluation*.pkl"))
 
 
 def test_cumulative_successes_survive_retry_and_restart(local_jobs, tmp_path, monkeypatch):

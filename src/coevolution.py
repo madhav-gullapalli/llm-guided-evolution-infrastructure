@@ -1,7 +1,27 @@
 """Generation-local matching and DEAP selection adapters for two populations."""
 import random
+import math
 from collections import Counter
 from deap import base, tools
+
+
+SEARCH_BUDGET = 100
+OBJECTIVES = ("kendall_tau", "best_validation_accuracy_at_100")
+
+
+class SearchFitness(base.Fitness):
+    weights = (1.0, 1.0)
+
+
+INVALID_SEARCH_FITNESS = (-float("inf"), -float("inf"))
+
+
+def best_search_accuracy(accuracies, budget=SEARCH_BUDGET):
+    """Best observed validation accuracy, including random initialization."""
+    values = list(accuracies)[:budget]
+    if len(values) != budget or not all(math.isfinite(value) for value in values):
+        raise ValueError(f"Expected {budget} finite search validation accuracies")
+    return max(values)
 
 
 def validate_pairing(a, b, matches, kappa):

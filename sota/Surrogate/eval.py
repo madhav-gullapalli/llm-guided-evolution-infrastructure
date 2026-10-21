@@ -29,6 +29,7 @@ from src.cfg.constants_surrogate import (
     SURROGATE_SEARCH_SPACE,
     VARIANT_DIR as DEFAULT_VARIANT_DIR,
 )
+from src.coevolution import SEARCH_BUDGET, best_search_accuracy
 
 from trajectory_plots import surrogate_data_plots
 from analysis import (
@@ -111,9 +112,9 @@ config.optimizer = ""
 config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
-config.search.num_init = 50
+config.search.num_init = 15
 config.search.k = 10
-config.search.epochs = args.epochs
+config.search.epochs = SEARCH_BUDGET if _coevolution else args.epochs
 config.search.num_candidates = 100
 config.out_dir = os.path.join(SURROGATE_RUN_DIR, gene_id)
 config.debug_predictor = True
@@ -484,6 +485,7 @@ NasBench201SearchSpace.get_op_indices = safe_get_op_indices
 print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 
+search_results = {}
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
     args.trial = i
@@ -557,6 +559,9 @@ for i in range(NUM_TRIALS):
         write_config_to_file()
         trainer = Trainer(optimizer, config, lightweight_output=True)
         trainer.search() 
+        if _coevolution and p_name == "LLM_NB201_Predictor":
+            search_results["best_accuracy"] = best_search_accuracy(
+                trainer.search_trajectory.valid_acc)
 
 
         # Access the optimizer instance from the trainer
@@ -719,9 +724,12 @@ if not RUN_BASELINES or RUN_ALL:
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
-        _f.write(f"{final_kendall_tau},{final_mse}")
+        second_objective = search_results["best_accuracy"] if _coevolution else final_mse
+        _f.write(f"{final_kendall_tau},{second_objective}")
 
     print(f"Results written to {filename}")
     print(f"  Kendall Tau: {final_kendall_tau:.4f}")
     print(f"  MSE:         {final_mse:.6f}")
+    if _coevolution:
+        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {second_objective:.6f}")
     print('=' * 120); print('job done'); print('=' * 120)

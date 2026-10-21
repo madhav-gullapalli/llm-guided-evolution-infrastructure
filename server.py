@@ -10,8 +10,10 @@ from src.cfg.constants import *
 
 app = FastAPI(title="LLM API", version="1.0")
 
-BATCH_SIZE = 8  # num of LLM requests to process at once
-BATCH_WAIT_TIME = 2  # max wait time for batch to fill in s
+BATCH_SIZE = int(os.getenv("LLM_SERVER_BATCH_SIZE", "8"))
+BATCH_WAIT_TIME = float(os.getenv("LLM_SERVER_BATCH_WAIT_TIME", "2"))
+if BATCH_SIZE < 1 or BATCH_WAIT_TIME < 0:
+    raise ValueError("Batch size must be positive and batch wait time nonnegative")
 
 class LLMRequest(BaseModel):
     prompt: str
@@ -81,6 +83,8 @@ class LLMModel:
         self.request_queue = asyncio.Queue() # queue for holding requests to process
         self.batch_task = None # current task
         self.batch_lock = asyncio.Lock() # lock for
+        self.batch_id = 0
+        self.request_id = 0
         self.is_processing = False # current state
         print("ready to go", flush=True)
 
@@ -160,73 +164,78 @@ class LLMModel:
                             break
                     
                     batch_size = len(batch)
-                    print(f"Processing batch of {batch_size} requests", flush=True)
+                    self.batch_id += 1
+                    batch_id = self.batch_id
+                    print(
+                        f"Processing batch {batch_id} of {batch_size} requests "
+                        f"(queued after collect: {self.request_queue.qsize()})",
+                        flush=True,
+                    )
                     
                     prompts = [req["prompt"] for req in batch]
                     
                     max_new_tokens = max(req["max_new_tokens"] for req in batch)
                     
-                    # all temps and top_p are same
+                    # Use batch leader sampling settings, as in the reference.
                     temperature = batch[0]["temperature"] 
                     top_p = batch[0]["top_p"]
                     
                     start_time = time.time()
                     
-                    # The pipeline is synchronous and can run for minutes.  Keep it
-                    # off FastAPI's event loop so new requests can join the queue.
-                    # A pipeline call has one sampling configuration. Group
-                    # compatible requests instead of applying request zero's
-                    # settings to everyone in the batch.
-                    groups = {}
-                    for index, req in enumerate(batch):
-                        key = (req["max_new_tokens"], req["temperature"], req["top_p"])
-                        groups.setdefault(key, []).append(index)
-                    results = [None] * len(batch)
-                    for (tokens, temp, nucleus), indices in groups.items():
-                        group_results = await asyncio.to_thread(
-                            self.pipeline,
-                            [batch[index]["prompt"] for index in indices],
-                            max_new_tokens=tokens,
-                            temperature=temp,
-                            top_p=nucleus,
-                        )
-                        for index, result in zip(indices, group_results):
-                            results[index] = result
+                    # Match MosesTheRedSea-main: one inference call per collected
+                    # batch. Sampling settings belong to the batch leader; the
+                    # token budget is the maximum requested by any batch member.
+                    # Running off-thread lets HTTP requests queue during inference.
+                    print(
+                        f"Batch {batch_id}: max_new_tokens={max_new_tokens}, "
+                        f"temperature={temperature}, top_p={top_p}", flush=True,
+                    )
+                    results = await asyncio.to_thread(
+                        self.pipeline, prompts, max_new_tokens=max_new_tokens,
+                        temperature=temperature, top_p=top_p,
+                    )
+                    if len(results) != batch_size:
+                        raise RuntimeError("Inference returned an unexpected number of results")
+                    outputs = [result[0].get("generated_text", str(result)) for result in results]
 
                     response_time = round(time.time() - start_time, 2)
-                    print(f"Batch of {batch_size} finished in {response_time}s", flush=True)
+                    print(
+                        f"Finished batch {batch_id} in {response_time}s "
+                        f"(queued after finish: {self.request_queue.qsize()})", flush=True,
+                    )
                     
-                    # for every future, set its result
-                    for result, future in zip(results, futures):
-                        output_txt = result[0].get("generated_text", str(result))
-                        
-                        future.set_result({
-                            "generated_text": output_txt,
-                            "response_time_sec": response_time,
-                            "batch_size": batch_size
-                        })
-                        
-                        # done with task
-                        self.request_queue.task_done()
-                
+                    for request, output_txt, future in zip(batch, outputs, futures):
+                        if not future.done():
+                            future.set_result({
+                                "generated_text": output_txt,
+                                "response_time_sec": response_time,
+                                "batch_size": batch_size,
+                            })
+                        print(
+                            f"Request {request.get('request_id', '?')} completed "
+                            f"(batch={batch_id}, total_wait="
+                            f"{time.time() - request.get('queued_at', start_time):.2f}s)",
+                            flush=True,
+                        )
                 except Exception as e:
-                    print(f"Error processing batch: {str(e)}")
+                    print(f"Error processing batch: {e}", flush=True)
                     for future in futures:
                         if not future.done():
                             future.set_exception(e)
-                    
-                    # Mark all tasks as done
-                    for _ in range(len(futures)):
+                finally:
+                    # Exactly one acknowledgement per dequeued request, including
+                    # cancelled clients and failed inference calls.
+                    for _ in futures:
                         self.request_queue.task_done()
-                
+
                 # Check if queue is empty, if so - sleep briefly to save resources
                 if self.request_queue.empty():
                     await asyncio.sleep(0.01)
         
         except asyncio.CancelledError:
-            print("Batch processor cancelled")
+            print("Batch processor cancelled", flush=True)
         except Exception as e:
-            print(f"Unexpected error in batch processor: {str(e)}")
+            print(f"Unexpected error in batch processor: {str(e)}", flush=True)
         finally:
             async with self.batch_lock:
                 self.is_processing = False
@@ -234,13 +243,15 @@ class LLMModel:
     async def generate(self, request_dict):
         """Submit a request to the batch processor"""
         # future is a placeholder for later result
-        future = asyncio.Future()
-        
-        # put in queue
-        print('Hey I am about to access the request queue attribute')
+        future = asyncio.get_running_loop().create_future()
+        self.request_id += 1
+        request_dict = dict(request_dict, request_id=self.request_id, queued_at=time.time())
         await self.request_queue.put((request_dict, future))
-        print('No problem, I got it')
-        
+        print(
+            f"Request {self.request_id} queued (queue size: {self.request_queue.qsize()})",
+            flush=True,
+        )
+
         # start processing batches if not already started
         await self.start_batch_processor()
         
@@ -273,7 +284,6 @@ async def generate_text(request: LLMRequest):
         
         # Get the model instance
         model = LLMModel()
-        print(dir(model))
         
         # Submit to the batch processor and wait for result
         start_time = time.time()

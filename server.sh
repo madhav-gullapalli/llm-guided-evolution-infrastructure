@@ -44,6 +44,8 @@ print(f"cuda tensor ok on {x.device}")
 PY
 
 export SERVER_HOSTNAME=$(hostname)
+# Jobs submitted below inherit this; src/cfg/constants.py reads it as PORT.
+export LLMGE_PORT=12676
 
 HOSTNAME_FILE=$(pwd)"/hostname.log"
 
@@ -55,4 +57,4 @@ echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT)"
 echo "Submitting island controller (count=$COUNT)"
 sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"
 
-uv run uvicorn server:app --host $SERVER_HOSTNAME --port 12676 --workers 1
+uv run uvicorn server:app --host $SERVER_HOSTNAME --port $LLMGE_PORT --workers 1

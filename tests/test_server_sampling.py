@@ -1,43 +1,122 @@
-"""Exercise batch sampling without loading the GPU model or HTTP server."""
+"""Exercise the actual async batch worker without loading model weights."""
 import ast
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
+import threading
+import time
+
+import pytest
 
 
-def test_batch_preserves_each_requests_sampling_settings():
+def worker(pipeline, batch_size=8):
     tree = ast.parse((Path(__file__).resolve().parents[1] / 'server.py').read_text())
-    processor = next(n for n in ast.walk(tree)
-                     if isinstance(n, ast.AsyncFunctionDef) and n.name == '_batch_processor')
-    statements = next(n.body for n in ast.walk(processor)
-                      if isinstance(n, ast.Try) and any(
-                          isinstance(s, ast.Assign) and any(
-                              isinstance(t, ast.Name) and t.id == 'groups' for t in s.targets)
-                          for s in n.body))
-    start = next(i for i, n in enumerate(statements)
-                 if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
-                 and n.targets[0].id == 'groups')
-    stop = next(i for i, n in enumerate(statements)
-                if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
-                and n.targets[0].id == 'response_time')
-    wrapper = ast.parse('async def generate(self, batch):\n    pass\n').body[0]
-    wrapper.body = statements[start:stop] + [ast.Return(ast.Name('results', ast.Load()))]
-    module = ast.fix_missing_locations(ast.Module([wrapper], []))
-    async def to_thread(function, *args, **kwargs):
-        return function(*args, **kwargs)
+    model = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'LLMModel')
+    methods = [n for n in model.body if isinstance(n, ast.AsyncFunctionDef)]
+    cls = ast.ClassDef(name='Worker', bases=[], keywords=[], body=methods, decorator_list=[])
+    namespace = dict(asyncio=asyncio, time=time, BATCH_SIZE=batch_size, BATCH_WAIT_TIME=.01)
+    exec(compile(ast.fix_missing_locations(ast.Module([cls], [])), 'server.py', 'exec'), namespace)
+    instance = namespace['Worker']()
+    instance.pipeline = pipeline
+    instance.request_queue = asyncio.Queue()
+    instance.batch_lock = asyncio.Lock()
+    instance.batch_task = None
+    instance.is_processing = False
+    instance.batch_id = instance.request_id = 0
+    return instance
 
-    namespace = {'asyncio': SimpleNamespace(to_thread=to_thread)}
-    exec(compile(module, 'server_sampling', 'exec'), namespace)
+
+def request(prompt, temperature=.7, top_p=.9, tokens=100):
+    return dict(prompt=prompt, temperature=temperature, top_p=top_p, max_new_tokens=tokens)
+
+
+async def stop(instance):
+    instance.batch_task.cancel()
+    await instance.batch_task
+
+
+def test_batch_uses_one_call_with_reference_sampling_policy():
     calls = []
 
     def pipeline(prompts, **settings):
         calls.append((prompts, settings))
-        return [(prompt, settings.copy()) for prompt in prompts]
+        return [[dict(generated_text=p)] for p in prompts]
 
-    requests = [dict(prompt=p, max_new_tokens=100, temperature=t, top_p=n)
-                for p, t, n in [('a', .2, .1), ('b', .7, .9), ('c', .2, .1)]]
-    results = asyncio.run(namespace['generate'](SimpleNamespace(pipeline=pipeline), requests))
-    assert len(calls) == 2
-    assert [r[0] for r in results] == ['a', 'b', 'c']
-    for result, request in zip(results, requests):
-        assert result[1] == {k: request[k] for k in ('max_new_tokens', 'temperature', 'top_p')}
+    async def scenario():
+        instance = worker(pipeline)
+        results = await asyncio.wait_for(asyncio.gather(
+            instance.generate(request('a', temperature=.2, top_p=.1)),
+            instance.generate(request('b', temperature=.7, tokens=200)),
+            instance.generate(request('c', temperature=.3)),
+        ), 2)
+        await asyncio.wait_for(instance.request_queue.join(), 1)
+        await stop(instance)
+        assert [r['generated_text'] for r in results] == ['a', 'b', 'c']
+        assert all(r['batch_size'] == 3 for r in results)
+
+    asyncio.run(scenario())
+    assert calls == [(['a', 'b', 'c'], dict(max_new_tokens=200, temperature=.2, top_p=.1))]
+
+
+def test_requests_queue_during_inference_and_cancelled_client_does_not_break_batch():
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def pipeline(prompts, **settings):
+        calls.append(prompts)
+        if len(calls) == 1:
+            started.set()
+            assert release.wait(2)
+        return [[dict(generated_text=p)] for p in prompts]
+
+    async def scenario():
+        instance = worker(pipeline, batch_size=2)
+        first = asyncio.create_task(instance.generate(request('a')))
+        second = asyncio.create_task(instance.generate(request('b')))
+        try:
+            async def wait_started():
+                while not started.is_set():
+                    await asyncio.sleep(.001)
+            await asyncio.wait_for(wait_started(), 1)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            third = asyncio.create_task(instance.generate(request('c')))
+            await asyncio.sleep(.01)
+            assert instance.request_queue.qsize() == 1
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(second, third), 2)
+            assert [r['generated_text'] for r in results] == ['b', 'c']
+            await asyncio.wait_for(instance.request_queue.join(), 1)
+        finally:
+            release.set()
+            await stop(instance)
+
+    asyncio.run(scenario())
+    assert calls == [['a', 'b'], ['c']]
+
+
+@pytest.mark.parametrize('failure', ['exception', 'short_results'])
+def test_failed_batch_releases_clients_and_worker_processes_next_batch(failure):
+    count = 0
+
+    def pipeline(prompts, **settings):
+        nonlocal count
+        count += 1
+        if count == 1:
+            if failure == 'exception':
+                raise RuntimeError('inference failed')
+            return []
+        return [[dict(generated_text=p)] for p in prompts]
+
+    async def scenario():
+        instance = worker(pipeline, batch_size=2)
+        results = await asyncio.wait_for(asyncio.gather(
+            instance.generate(request('a')), instance.generate(request('b')),
+            return_exceptions=True), 2)
+        assert all(isinstance(r, RuntimeError) for r in results)
+        result = await asyncio.wait_for(instance.generate(request('c')), 2)
+        assert result['generated_text'] == 'c'
+        await asyncio.wait_for(instance.request_queue.join(), 1)
+        await stop(instance)
+
+    asyncio.run(scenario())
