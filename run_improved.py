@@ -561,21 +561,32 @@ def check4results(gene_id):
         try:
             with open(results_path, 'r') as file:
                 results = file.read()
-            fitness = [float(r.strip()) for r in results.split(',')]
+            parts = [float(r.strip()) for r in results.split(',') if r.strip()]
         except (OSError, ValueError) as exc:
             print(f"\t☠ Invalid fitness results for {gene_id}: {exc}", flush=True)
             GLOBAL_DATA[gene_id]['status'] = 'completed'
             GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
             return False
-        # TODO: get all features later
-        fitness = fitness[:len(FITNESS_WEIGHTS)]
+        # New format: tau,precision_top10,mse  |  legacy: tau,mse (reject — wrong objective count)
+        if len(parts) >= 3:
+            fitness = (parts[0], parts[1])
+            GLOBAL_DATA[gene_id]['mse'] = parts[2]
+        else:
+            print(
+                f"\t☠ Expected tau,precision,mse in results for {gene_id}; got {parts}",
+                flush=True,
+            )
+            GLOBAL_DATA[gene_id]['status'] = 'completed'
+            GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
+            return False
         if len(fitness) != len(FITNESS_WEIGHTS) or not all(np.isfinite(f) for f in fitness):
             print(f"\t☠ Wrong/non-finite fitness shape for {gene_id}: {fitness}", flush=True)
             GLOBAL_DATA[gene_id]['status'] = 'completed'
             GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
             return False
-        fitness = tuple(fitness)
-        
+        if not np.isfinite(GLOBAL_DATA[gene_id]['mse']):
+            GLOBAL_DATA[gene_id]['mse'] = float('inf')
+
         GLOBAL_DATA[gene_id]['status'] = 'completed'
         GLOBAL_DATA[gene_id]['fitness'] = fitness
         # print(f'Model from Gene: {gene_id} Evaluated')
@@ -1032,17 +1043,36 @@ def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path
 
     return population_data, start_gen, global_data
 
+def _mse_of(ind):
+    """MSE from GLOBAL_DATA for tie-breaking (lower is better); missing → +inf."""
+    return GLOBAL_DATA.get(ind[0], {}).get("mse", float("inf"))
+
+
+def prefer_lower_mse(inds):
+    """Keep relative order, but within identical fitness.values prefer lower MSE."""
+    from collections import OrderedDict
+
+    groups = OrderedDict()
+    for ind in inds:
+        groups.setdefault(ind.fitness.values, []).append(ind)
+    out = []
+    for members in groups.values():
+        out.extend(sorted(members, key=_mse_of))
+    return out
+
+
 def true_nsga2(pop, k):
     """Select *k* parents, including for small populations.
 
     ``selTournamentDCD`` requires a multiple of four candidates.  The old
     implementation rounded smaller requests down to zero, which silently
     disabled crossover whenever only one or two valid individuals remained.
+    Among equal fitness vectors, lower MSE is preferred (tie-break only).
     """
     if not pop or k <= 0:
         return []
 
-    ranked = tools.selNSGA2(pop, len(pop))
+    ranked = prefer_lower_mse(tools.selNSGA2(pop, len(pop)))
     if k < 4:
         # DCD cannot operate here; retain the best candidates and repeat as
         # needed so the caller still receives a mating pool of the requested
@@ -1054,7 +1084,7 @@ def true_nsga2(pop, k):
     selected = tools.selTournamentDCD(candidates, dcd_k)
     unique = []
     seen = set()
-    for ind in selected + ranked:
+    for ind in prefer_lower_mse(selected) + ranked:
         if ind[0] in seen:
             continue
         unique.append(ind)
@@ -1183,14 +1213,16 @@ if __name__ == "__main__":
         # bounded elite count.  num_elites is a target, not a requirement
         # that can invalidate an otherwise usable generation.
         elite_count = min(num_elites, len(population))
-        TOP_N_GENES = tools.selSPEA2(population, min(NUM_EOT_ELITES, len(population)))
+        TOP_N_GENES = prefer_lower_mse(
+            tools.selSPEA2(population, min(NUM_EOT_ELITES, len(population)))
+        )
 
         print_population(population, GLOBAL_DATA)
         # Select the next generation's parents
         box_print(f"Selection", print_bbox_len=60, new_line_end=False)
         # These bypass the mutation and cross-over so we dont lose them
 
-        elites = tools.selSPEA2(population, elite_count)
+        elites = prefer_lower_mse(tools.selSPEA2(population, elite_count))
         
         # Select the next generation's parents
         offspring_count = min(population_size, len(population))

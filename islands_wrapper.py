@@ -35,7 +35,12 @@ def submit_run(tempFile, text):
     print(f"\t‣ Bash Script Saved to {tempFile}")
     job_id = None
     successful_sub_flag = False
-    result = subprocess.run([RUN_COMMAND, tempFile], capture_output=True, text=True)
+    # Pass controller env (LLMGE_PORT / LLMGE_HOSTNAME_FILE / evolution mode) to island jobs
+    # so parallel runs can use separate LLM servers without clobbering each other.
+    submit_cmd = [RUN_COMMAND, tempFile]
+    if RUN_COMMAND == "sbatch":
+        submit_cmd = [RUN_COMMAND, "--export=ALL", tempFile]
+    result = subprocess.run(submit_cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print("\t‣ Script Submitted Successfully.\n\t‣ Output:", result.stdout.strip())
         successful_sub_flag = True

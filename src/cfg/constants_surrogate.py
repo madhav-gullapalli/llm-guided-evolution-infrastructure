@@ -78,7 +78,13 @@ ISLAND_LLMS = [LLM_QWEN, LLM_MIXTRAL, LLM_DEEPSEEK, LLM_LLAMA3]
 ENVIRONMENT_DIR = os.path.join(ROOT_DIR, ".venv")
 SLURM_CONFIG_DIR = os.path.join(ROOT_DIR, "slurm-config/")
 LOCAL_LLM = True
-HOSTNAME_DIR = os.path.join(ROOT_DIR, "hostname.log")
+# Overridable so two LLM servers can run in parallel (different host files / ports).
+_hostname_file = os.getenv("LLMGE_HOSTNAME_FILE", "hostname.log")
+HOSTNAME_DIR = (
+    _hostname_file
+    if os.path.isabs(_hostname_file)
+    else os.path.join(ROOT_DIR, _hostname_file)
+)
 
 # Multi-island settings
 GLOBAL_DATA_PATH = "global_data"
@@ -121,13 +127,24 @@ elif torch.cuda.is_available():
 else:
     DEVICE = 'cpu'
 
+# Random architectures evaluated before the surrogate is trained (BANANAS num_init).
+# Papers / NASLib default to 10; COLE uses 20. Was hard-coded to 50.
+NUM_INIT = 20
+# BANANAS search seed (NASLib). Override with LLMGE_SEARCH_SEED for harder random starts
+# (e.g. seed 1 ≈ 68.7% random-best vs seed 242 ≈ 73.0%).
+SEARCH_SEED = int(os.getenv("LLMGE_SEARCH_SEED", "242"))
 # resolves to {MODEL}_{gene_id}
 RUNLINE_TMP = '{}_{}'
-EVAL_RUNLINE = "uv run python {} --model {} --variant_dir {VARIANT_DIR}"
+EVAL_RUNLINE = (
+    f"uv run python {{}} --model {{}} --variant_dir {{VARIANT_DIR}} "
+    f"--num_init {NUM_INIT} --seed {SEARCH_SEED}"
+)
 """
 Evolution Constants/Params
 """
-FITNESS_WEIGHTS = (1.0, -1.0)  # maximize kendall_tau, minimize mse
+# Primary Pareto objectives: maximize Kendall τ and Precision@top-10%.
+# MSE is written as a third field in results/*.txt and used only as a tie-breaker.
+FITNESS_WEIGHTS = (1.0, 1.0)  # maximize kendall_tau, maximize precision_top10
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10

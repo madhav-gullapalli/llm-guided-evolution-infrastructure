@@ -4,7 +4,7 @@
 #SBATCH --mem 16G
 #SBATCH -c 4
 #SBATCH -N 1
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/islands/slurm-%j.out
 echo "launching LLM Guided Evolution"
 hostname

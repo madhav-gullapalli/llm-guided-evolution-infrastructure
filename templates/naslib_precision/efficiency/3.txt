@@ -1,0 +1,12 @@
+This code is used in an LLM-guided NAS surrogate. Improve it with an emphasis on efficient search support. Evolution selects on Kendall Tau + Precision@top-10% (not MSE), so the pipeline trades cheap surrogate compute for fewer expensive architecture evaluations.
+
+Target the best trade-off between:
+- Kendall Tau (global ranking)
+- Precision@top-10% (elite recovery)
+- computational or token efficiency
+- generalization in limited-data settings
+
+The current code block:
+```python
+{}
+```

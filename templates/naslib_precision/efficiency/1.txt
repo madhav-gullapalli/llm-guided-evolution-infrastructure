@@ -1,0 +1,8 @@
+Improve this NASLib surrogate code to increase efficiency without hurting Kendall Tau or Precision@top-10%—the two metrics used as evolution fitness. Cheaper surrogate components let more candidates be screened before expensive evaluations.
+
+Favor edits that reduce redundancy or overfitting risk while preserving (or improving) global ranking quality and top-10% elite hit rate.
+
+The current code block:
+```python
+{}
+```

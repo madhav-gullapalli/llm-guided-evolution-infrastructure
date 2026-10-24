@@ -1,0 +1,8 @@
+Edit this NASLib surrogate code to better support rank-based architecture selection under a dual fitness of Kendall Tau + Precision@top-10%. In this pipeline, only the top-ranked candidates are evaluated next, so missing true elites (low Precision@top-10%) wastes the search budget even if overall Tau looks decent.
+
+Prefer changes that correctly order candidates, reduce swaps between strong and weak architectures, and keep the true best architectures near the top of the predicted ranking. Treat Tau and top-10% precision as more important than raw numeric calibration.
+
+The current code block:
+```python
+{}
+```

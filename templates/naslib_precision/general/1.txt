@@ -1,0 +1,14 @@
+This code is part of a surrogate used inside NASLib surrogate-assisted search. Genes are selected by a Pareto fitness of Kendall Tau and Precision@top-10% (MSE is tie-break only). Improve this code so the surrogate is more useful for selecting promising architectures during search.
+
+Priorities:
+- Raise Kendall Tau on held-out architectures (global ranking quality).
+- Raise Precision@top-10% (recover true elites in the predicted top 10%).
+- Prefer changes that generalize in low-data or cold-start settings.
+- Keep the code clear, valid, and compatible with the surrounding pipeline.
+
+Prefer code-oriented architecture understanding over task-specific shortcuts. Better Tau and top-k precision should improve the search trajectory, not just local regression fit.
+
+The current code block:
+```python
+{}
+```

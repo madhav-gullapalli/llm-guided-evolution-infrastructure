@@ -5,11 +5,14 @@ Columns:
   gene, island, generation, parent, mutation, mode, family, status,
                                        mode USE_missing_class: LLM dropped SurrogateUsageOptimizer,
                                        so eval.py ran stock BANANAS for that gene
-  kendall_tau, mse                     fitness LLM-GE used (results/<gene>_results.txt)
+  kendall_tau, mse                     from results/<gene>_results.txt (tau,precision,mse or legacy tau,mse);
+                                       evolution fitness is (tau, precision_top10); mse is tie-break only
   top10_tau                            Kendall tau on only the truly best 10% of the held-out test
                                        architectures (can the surrogate tell good from great?)
-  param_count_tau, param_count_top10_tau
-                                       the same two taus for a no-learning baseline that ranks
+  precision_top10                      Precision@top-10% (Ning et al. / GATES): fraction of the
+                                       true top 10% that the surrogate also ranks in its top 10%
+  param_count_tau, param_count_top10_tau, param_count_precision_top10
+                                       the same metrics for a no-learning baseline that ranks
                                        architectures by parameter count; a surrogate below these
                                        learned nothing beyond "bigger is better"
   random_start_best_acc                best true accuracy among the random initial
@@ -50,7 +53,8 @@ REPO_ROOT = SURROGATE_DIR.parents[1]
 
 COLUMNS = [
     "gene", "island", "generation", "parent", "mutation", "mode", "family", "status",
-    "kendall_tau", "mse", "top10_tau", "param_count_tau", "param_count_top10_tau",
+    "kendall_tau", "mse", "top10_tau", "precision_top10",
+    "param_count_tau", "param_count_top10_tau", "param_count_precision_top10",
     "random_start_best_acc", "guided_best_acc", "guided_mean_acc",
     "guided_evals_to_best", "evals_to_within_1pct_opt", "found_optimum", "beat_random_start",
     "same_score_as_parent", "output_dir",
@@ -146,12 +150,22 @@ def islands_from_logs(log_dir: Path, genes: set) -> dict:
 
 
 def read_results(results_dir: Path, gene: str) -> tuple[Optional[float], Optional[float]]:
+    """Return (kendall_tau, mse) from results file.
+
+    Supports ``tau,precision,mse`` (current fitness) and legacy ``tau,mse``.
+    """
     path = results_dir / f"{gene}_results.txt"
     if not path.exists():
         return None, None
     try:
-        tau, mse = (float(x) for x in path.read_text().strip().split(",")[:2])
+        parts = [float(x) for x in path.read_text().strip().split(",") if x.strip()]
     except ValueError:
+        return None, None
+    if len(parts) >= 3:
+        tau, _precision, mse = parts[0], parts[1], parts[2]
+    elif len(parts) == 2:
+        tau, mse = parts[0], parts[1]
+    else:
         return None, None
     if not (math.isfinite(tau) and math.isfinite(mse)):
         return None, None
@@ -234,8 +248,17 @@ def _tau(x, y) -> Optional[float]:
     return None if value is None or math.isnan(value) else float(value)
 
 
+def _precision_at_top(true: np.ndarray, score: np.ndarray, fraction: float = TOP_FRACTION) -> float:
+    """Precision@top-K%: |true-top ∩ predicted-top| / K (Ning et al. 2021, GATES)."""
+    n = len(true)
+    k = max(1, int(round(n * fraction)))
+    true_top = set(np.argsort(-true, kind="stable")[:k])
+    pred_top = set(np.argsort(-score, kind="stable")[:k])
+    return len(true_top & pred_top) / k
+
+
 def ranking_metrics(out_dir: Optional[Path]) -> dict:
-    """Top-10% tau and the parameter-count baseline on the final retrain's held-out test set."""
+    """Top-10% tau, Precision@top-10%, and the parameter-count baseline on the final retrain's test set."""
     if out_dir is None:
         return {}
     files = sorted((out_dir / "analysis").glob("predictions_*.csv"))
@@ -253,8 +276,10 @@ def ranking_metrics(out_dir: Optional[Path]) -> dict:
     top = true >= np.quantile(true, 1 - TOP_FRACTION)
     return {
         "top10_tau": _tau(true[top], pred[top]),
+        "precision_top10": _precision_at_top(true, pred),
         "param_count_tau": _tau(true, proxy),
         "param_count_top10_tau": _tau(true[top], proxy[top]),
+        "param_count_precision_top10": _precision_at_top(true, proxy),
     }
 
 
@@ -367,10 +392,19 @@ def main() -> None:
         ranked = [r for r in ok if r.get("top10_tau") is not None]
         if ranked:
             best_top = max(ranked, key=lambda r: r["top10_tau"])
+            best_prec = max(
+                (r for r in ok if r.get("precision_top10") is not None),
+                key=lambda r: r["precision_top10"],
+                default=None,
+            )
             base = ranked[0]
             print(f"  best top-10% tau:  {best_top['gene']}  top10_tau={best_top['top10_tau']:.4f}")
+            if best_prec is not None:
+                print(f"  best Precision@top-10%: {best_prec['gene']}  "
+                      f"precision_top10={best_prec['precision_top10']:.4f}")
             print(f"  parameter-count baseline (seed {args.seed} test set): "
-                  f"tau={base['param_count_tau']:.4f}  top10_tau={base['param_count_top10_tau']:.4f}")
+                  f"tau={base['param_count_tau']:.4f}  top10_tau={base['param_count_top10_tau']:.4f}  "
+                  f"precision_top10={base['param_count_precision_top10']:.4f}")
         no_ops = sum(1 for r in ok if r["same_score_as_parent"] is True)
         print(f"  same score as parent: {no_ops}/{len(ok)}")
 

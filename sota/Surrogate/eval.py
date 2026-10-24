@@ -32,6 +32,7 @@ from src.cfg.constants_surrogate import (
 
 from trajectory_plots import surrogate_data_plots
 from analysis import (
+    precision_at_top_from_predictions_csv,
     records_from_candidate_log,
     records_from_test_set,
     write_prediction_analysis,
@@ -46,6 +47,12 @@ parser.add_argument('--debug', action='store_true', help='stores trajectory_log 
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
+parser.add_argument(
+    '--num_init',
+    type=int,
+    default=50,
+    help='Random-start architectures before the surrogate is trained (papers/NASLib use 10; COLE uses 20)',
+)
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
@@ -101,7 +108,7 @@ config.optimizer = ""
 config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
-config.search.num_init = 50
+config.search.num_init = args.num_init
 config.search.k = 10
 config.search.epochs = args.epochs
 config.search.num_candidates = 100
@@ -701,13 +708,24 @@ if not RUN_BASELINES or RUN_ALL:
         final_kendall_tau = 0.0
         final_mse = float('inf')
 
-    # Write LLM-GE results file
+    # Precision@top-10% on the final retrain's held-out test set (primary fitness with τ).
+    pred_csvs = sorted(_glob.glob(f"{config.out_dir}/**/analysis/predictions_*.csv", recursive=True))
+    final_precision_top10 = (
+        precision_at_top_from_predictions_csv(pred_csvs[-1]) if pred_csvs else None
+    )
+    if final_precision_top10 is None:
+        print("Warning: no predictions CSV for Precision@top-10% — defaulting to 0.0.")
+        final_precision_top10 = 0.0
+
+    # Write LLM-GE results file: tau, precision_top10, mse
+    # Evolution fitness uses (tau, precision); mse is logged for tie-breaking / analysis.
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
-        _f.write(f"{final_kendall_tau},{final_mse}")
+        _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
     print(f"Results written to {filename}")
-    print(f"  Kendall Tau: {final_kendall_tau:.4f}")
-    print(f"  MSE:         {final_mse:.6f}")
+    print(f"  Kendall Tau:       {final_kendall_tau:.4f}")
+    print(f"  Precision@top-10%: {final_precision_top10:.4f}")
+    print(f"  MSE:               {final_mse:.6f}")
     print('=' * 120); print('job done'); print('=' * 120)

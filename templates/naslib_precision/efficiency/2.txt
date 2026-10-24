@@ -1,0 +1,8 @@
+Modify this surrogate-assisted NAS code to be more efficient and more robust. Fitness maximizes Kendall Tau and Precision@top-10%; wasted complexity that does not help those ranking metrics is costly.
+
+Prefer compact, high-signal representations and lightweight modeling choices that still preserve architecture semantics, overall ordering quality, and top-k selection usefulness.
+
+The current code block:
+```python
+{}
+```

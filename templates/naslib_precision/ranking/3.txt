@@ -1,0 +1,8 @@
+This surrogate sits inside a BANANAS-style NAS loop. Evolution selects models by maximizing Kendall Tau and Precision@top-10% together. Poor overall ordering or a weak top-10% shortlist sends search toward bad regions and wastes evaluations.
+
+Improve this code accordingly. Prioritize edits that strengthen pairwise discrimination, top-of-ranking fidelity, and selection usefulness during search—not MSE minimization.
+
+The current code block:
+```python
+{}
+```

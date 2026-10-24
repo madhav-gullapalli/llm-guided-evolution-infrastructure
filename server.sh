@@ -6,12 +6,19 @@
 #SBATCH -C "H200"
 #SBATCH --mem 160G
 #SBATCH -c 16
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
 echo "launching LLM Server"
 
 # Optional chained submission count to work around walltime limits
 COUNT=${1:-1}
+EXTRA_FILE=/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/extra_segments.txt
+if [[ -f "$EXTRA_FILE" ]]; then
+    EXTRA=$(cat "$EXTRA_FILE")
+    rm -f "$EXTRA_FILE"
+    COUNT=$((COUNT + EXTRA))
+    echo "Added $EXTRA extra segments from $EXTRA_FILE (count now $COUNT)"
+fi
 
 hostname
 
@@ -44,6 +51,8 @@ print(f"cuda tensor ok on {x.device}")
 PY
 
 export SERVER_HOSTNAME=$(hostname)
+# Jobs submitted below inherit this; src/cfg/constants.py reads it as PORT.
+export LLMGE_PORT=18631
 
 HOSTNAME_FILE=$(pwd)"/hostname.log"
 
@@ -55,4 +64,4 @@ echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT)"
 echo "Submitting island controller (count=$COUNT)"
 sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"
 
-uv run uvicorn server:app --host $SERVER_HOSTNAME --port 12676 --workers 1
+uv run uvicorn server:app --host $SERVER_HOSTNAME --port $LLMGE_PORT --workers 1

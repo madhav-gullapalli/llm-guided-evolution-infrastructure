@@ -191,6 +191,45 @@ def plot_predicted_vs_actual(df: pd.DataFrame, output_path: Path, title: str = "
     return output_path
 
 
+def precision_at_top(
+    true_accuracy,
+    predicted_accuracy,
+    *,
+    fraction: float = 0.10,
+) -> float | None:
+    """Precision@top-K%: |true-top ∩ predicted-top| / K (Ning et al. / GATES)."""
+    import numpy as np
+
+    true = np.asarray(true_accuracy, dtype=float)
+    pred = np.asarray(predicted_accuracy, dtype=float)
+    if true.size == 0 or pred.size != true.size:
+        return None
+    k = max(1, int(round(true.size * fraction)))
+    true_top = set(np.argsort(-true, kind="stable")[:k])
+    pred_top = set(np.argsort(-pred, kind="stable")[:k])
+    return float(len(true_top & pred_top) / k)
+
+
+def precision_at_top_from_predictions_csv(csv_path: str | Path, *, fraction: float = 0.10) -> float | None:
+    """Precision@top-10% on the last retrain's held-out test rows in a predictions_*.csv."""
+    import pandas as pd
+
+    path = Path(csv_path)
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    if df.empty or "true_accuracy" not in df.columns or "predicted_accuracy" not in df.columns:
+        return None
+    if "inner_epoch" in df.columns and df["inner_epoch"].notna().any():
+        df = df[df["inner_epoch"] == df["inner_epoch"].max()]
+    if "split" in df.columns and (df["split"] == "test").any():
+        df = df[df["split"] == "test"]
+    df = df.dropna(subset=["true_accuracy", "predicted_accuracy"])
+    if df.empty:
+        return None
+    return precision_at_top(df["true_accuracy"], df["predicted_accuracy"], fraction=fraction)
+
+
 def write_prediction_analysis(
     records: Sequence[Mapping[str, Any]],
     out_dir: str | Path,

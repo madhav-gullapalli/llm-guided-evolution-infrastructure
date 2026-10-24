@@ -6,7 +6,7 @@ run.sh
 #SBATCH --mem 16G
 #SBATCH -c 4                         
 #SBATCH -N 1
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/islands/slurm-%j.out
 ------
 
@@ -20,7 +20,7 @@ mixt.sh
 #SBATCH -C "H200"
 #SBATCH --mem 10G
 #SBATCH -c 48
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 ------
 
 
@@ -40,7 +40,7 @@ python-bash-script
 #SBATCH --mem 16G
 #SBATCH -c 12
 #SBATCH -N 1
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/evaluation/slurm-%j.out
 ------
 
@@ -53,7 +53,7 @@ llm-bash-script
 #SBATCH --mem 16G
 #SBATCH -c 2
 #SBATCH -N 1
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/evolution/slurm-%j.out
 ------
 
@@ -68,7 +68,7 @@ server-sh
 #SBATCH -C "H200"
 #SBATCH --mem 160G
 #SBATCH -c 16
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
 ------
 
@@ -83,5 +83,5 @@ island-controller
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 ------
