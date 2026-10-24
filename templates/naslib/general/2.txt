@@ -1,8 +1,12 @@
-Modify this NASLib surrogate code to improve downstream search performance, not just local regression fit. In this pipeline, weak surrogate decisions waste evaluation budget by sending training runs toward poor candidates.
+Edit the surrogate construction component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-Focus on changes that are likely to help the surrogate guide architecture selection more effectively across many candidate architectures. Prefer robust improvements over flashy but brittle edits, and optimize for better search decisions under limited budget.
+Candidate direction: Tune L1/L2 regularization and feature subsampling for reliable ranking with few training samples.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-The current code block:
+Return the entire replacement editable block in one Python code fence, including any new imports.
+
+The current editable code block:
 ```python
 {}
 ```

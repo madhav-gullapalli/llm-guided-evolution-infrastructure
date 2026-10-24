@@ -29,6 +29,7 @@ from src.cfg.constants_surrogate import (
     SURROGATE_SEARCH_SPACE,
     VARIANT_DIR as DEFAULT_VARIANT_DIR,
 )
+from src.coevolution import SEARCH_BUDGET, best_search_accuracy
 
 from trajectory_plots import surrogate_data_plots
 from analysis import (
@@ -53,9 +54,11 @@ parser.add_argument(
     default=50,
     help='Random-start architectures before the surrogate is trained (papers/NASLib use 10; COLE uses 20)',
 )
+parser.add_argument("--coevolution", action="store_true", help="Keep the paired usage optimizer policy")
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
+_coevolution = custom_args.coevolution
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -66,15 +69,15 @@ from naslib import utils
 from naslib.utils import get_dataset_api, create_exp_dir
 from naslib.utils.encodings import EncodingType
 from naslib.search_spaces import NasBench201SearchSpace 
-from naslib.optimizers import RegularizedEvolution, Bananas, Npenas
+from naslib.optimizers import RegularizedEvolution, Npenas
 from naslib.defaults.trainer import Trainer
 
 from naslib.predictors.ensemble import Ensemble
 from naslib.predictors.gp import VarSparseGPPredictor, GPPredictor
 from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor 
 
-from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
+import naslib.optimizers.discrete.bananas.optimizer as bananas_opt
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -90,8 +93,16 @@ _variant_dir = args.variant_dir if os.path.isabs(args.variant_dir) else str(_scr
 if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 sys.path.append(_variant_dir)
-_model_module = importlib.import_module(args.model)
-surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+try:
+    _model_module = importlib.import_module(args.model)
+    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+except Exception as exc:
+    # Keep the evolution run moving when a generated variant is malformed.
+    # The explicit log prevents this fallback from being mistaken for a
+    # successful evaluation of the generated source.
+    print(f"[Evaluator] Fallback to {DEFAULT_MODEL_MODULE} for unusable variant {args.model}: {exc}")
+    _model_module = importlib.import_module(DEFAULT_MODEL_MODULE)
+    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
 if args.surrogate is not None:
     surrogate_config["name"] = args.surrogate
 
@@ -110,7 +121,7 @@ config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = args.num_init
 config.search.k = 10
-config.search.epochs = args.epochs
+config.search.epochs = SEARCH_BUDGET if _coevolution else args.epochs
 config.search.num_candidates = 100
 config.out_dir = os.path.join(SURROGATE_RUN_DIR, gene_id)
 config.debug_predictor = True
@@ -120,7 +131,7 @@ config.search.max_mutations = 3
 config.search.checkpoint_freq = 10000
 
 RUN_BASELINES = args.run_baselines
-RUN_ALL = True
+RUN_ALL = RUN_BASELINES
 SURROGATE = args.surrogate  # Options: 'xgboost' or 'mlp'
 NUM_TRIALS = args.trials
 DEBUG = args.debug
@@ -243,10 +254,11 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
 
     return selected
 
-acq_funcs.acquisition_function = batch_acquisition_function
-bananas_opt.acquisition_function = batch_acquisition_function
-bananas_opt.Bananas._get_best_candidates = _get_best_candidates_batch
-print("Patched Bananas optimizer for batch acquisition function.")
+if not _coevolution:
+    acq_funcs.acquisition_function = batch_acquisition_function
+    bananas_opt.acquisition_function = batch_acquisition_function
+    bananas_opt.Bananas._get_best_candidates = _get_best_candidates_batch
+    print("Patched Bananas optimizer for batch acquisition function.")
 
 # --- LOAD API ---
 dataset_api = get_dataset_api(config.search_space, config.dataset)
@@ -275,9 +287,10 @@ def debug_new_epoch(self, epoch):
             print(f"[Debug] Fit finished in {t1-t0:.2f}s")
 
             # 2. Acquisition Setup
-            acq_fn = bananas_opt.acquisition_function(
-                ensemble=self.ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
-            )
+            # Use the generated individual's policy. The previous global
+            # BANANAS wrapper bypassed mutations to _acquisition(), so those
+            # generated algorithms were never tested.
+            acq_fn = self._acquisition(ytrain)
 
             # 3. Candidate Generation
             print(f"[Debug] Generating {self.num_candidates} candidates...")
@@ -387,8 +400,9 @@ def instrument_usage_optimizer(optimizer):
     optimizer.new_epoch = measured_new_epoch
 
 # Apply the patch
-bananas_opt.Bananas.new_epoch = debug_new_epoch
-print("Monkey-patched Bananas.new_epoch for profiling.")
+if not _coevolution:
+    bananas_opt.Bananas.new_epoch = debug_new_epoch
+    print("Monkey-patched Bananas.new_epoch for profiling.")
 
 
 
@@ -478,6 +492,7 @@ NasBench201SearchSpace.get_op_indices = safe_get_op_indices
 print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 
+search_results = {}
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
     args.trial = i
@@ -512,7 +527,18 @@ for i in range(NUM_TRIALS):
             )
             instrument_usage_optimizer(optimizer)
         elif optimizer_name == "bananas":
-            optimizer = Bananas(config)
+            # The evolved module supplies the complete surrogate-usage
+            # strategy behind this single optimizer boundary.
+            optimizer = _model_module.SurrogateUsageOptimizer(
+                config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
+            )
+            # Keep the existing evaluator metrics/logging contract while the
+            # generated usage class owns the search implementation.
+            if _coevolution:
+                from coev_evaluation import observe_usage_optimizer
+                observe_usage_optimizer(optimizer)
+            else:
+                optimizer.new_epoch = types.MethodType(debug_new_epoch, optimizer)
         elif optimizer_name == "npenas":
             optimizer = Npenas(config)
         
@@ -528,26 +554,8 @@ for i in range(NUM_TRIALS):
             print(f"Injecting Custom Predictor: {p_name}")
             
             if optimizer_name == "bananas":
-                # --- MONKEY PATCHING ENSEMBLE ---
-                def _get_custom_ensemble(self):
-                    ensemble = Ensemble(num_ensemble=self.num_ensemble, ss_type=self.ss_type, predictor_type=self.predictor_type, config=self.config, zc=self.zc)
-                    # CHANGE: Create 3 instances matching the given custom predictor
-                    ensemble.ensemble = [
-                        predictor_cls(**predictor_kwargs) 
-                        for _ in range(self.num_ensemble)
-                    ]
-                    # Ensemble.fit otherwise resets every member to the base class's default_hyperparams,
-                    # discarding the gene's settings unless the gene's own fit() re-applies them.
-                    ensemble.set_hyperparams = lambda params: setattr(ensemble, "hyperparams", params)
-                    # try:
-                    #     print("Ensemble Predictor Hyperparameters:")
-                    #     print(ensemble.ensemble[0].default_hyperparams)
-                    # except:
-                    #     print("Predictor has no default_hyperparams attribute.")
-                    return ensemble
-
-                optimizer._get_ensemble = types.MethodType(_get_custom_ensemble, optimizer)
-                # --- END MONKEY PATCHING ---
+                # Predictor injection is owned by the generated usage seed.
+                pass
             else:
                 optimizer.predictor = predictor_cls(**predictor_kwargs)
         
@@ -558,6 +566,9 @@ for i in range(NUM_TRIALS):
         write_config_to_file()
         trainer = Trainer(optimizer, config, lightweight_output=True)
         trainer.search() 
+        if _coevolution and p_name == "LLM_NB201_Predictor":
+            search_results["best_accuracy"] = best_search_accuracy(
+                trainer.search_trajectory.valid_acc)
 
 
         # Access the optimizer instance from the trainer
@@ -688,10 +699,18 @@ for i in range(NUM_TRIALS):
 if not RUN_BASELINES or RUN_ALL:
     start_time = time.time()
 
+    try:
+        _predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+    except Exception as exc:
+        print(f"[Evaluator] Invalid predictor configuration for {args.model}; falling back to {DEFAULT_MODEL_MODULE}: {exc}")
+        _model_module = importlib.import_module(DEFAULT_MODEL_MODULE)
+        surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+        _predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+
     history = run_experiment(
         "bananas",
         predictor_cls=LLM_NB201_Predictor,
-        predictor_kwargs=_model_module.build_predictor_kwargs(surrogate_config),
+        predictor_kwargs=_predictor_kwargs,
     )
 
     # run_experiment saves surrogate metrics to a JSON inside config.out_dir
@@ -722,10 +741,19 @@ if not RUN_BASELINES or RUN_ALL:
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
-        _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
+        if _coevolution:
+            # Paired coevolution fitness: (kendall_tau, best_validation_accuracy).
+            second_objective = search_results["best_accuracy"]
+            _f.write(f"{final_kendall_tau},{second_objective}")
+        else:
+            # Solo SURROGATE fitness: (kendall_tau, precision_top10); mse for tie-break/logs.
+            _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
     print(f"Results written to {filename}")
     print(f"  Kendall Tau:       {final_kendall_tau:.4f}")
-    print(f"  Precision@top-10%: {final_precision_top10:.4f}")
-    print(f"  MSE:               {final_mse:.6f}")
+    if _coevolution:
+        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {second_objective:.6f}")
+    else:
+        print(f"  Precision@top-10%: {final_precision_top10:.4f}")
+        print(f"  MSE:               {final_mse:.6f}")
     print('=' * 120); print('job done'); print('=' * 120)

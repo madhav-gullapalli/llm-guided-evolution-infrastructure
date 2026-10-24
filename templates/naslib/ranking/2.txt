@@ -1,8 +1,12 @@
-Edit this NASLib surrogate code to better support rank-based architecture selection. In this pipeline, selection quality matters more than perfectly calibrated scores because only the top-ranked candidates are likely to be evaluated next.
+Edit the surrogate usage optimizer component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-Prefer changes that help the model correctly order candidate architectures, reduce swapped comparisons between good and bad candidates, and remain stable in low-data settings. Treat ranking fidelity as more important than raw numeric calibration.
+Candidate direction: Improve selection of the top candidates using one score per candidate and integer list indices.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-The current code block:
+Return the entire replacement editable block in one Python code fence, including any new imports.
+
+The current editable code block:
 ```python
 {}
 ```

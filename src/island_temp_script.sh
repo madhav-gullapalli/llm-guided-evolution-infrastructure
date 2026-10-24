@@ -2,7 +2,7 @@
 #SBATCH --job-name=IslandsController
 #SBATCH -N1 --ntasks-per-node=16
 #SBATCH --mem-per-gpu=16G
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
@@ -20,5 +20,5 @@ export LLMGE_PORT="${LLMGE_PORT:-18631}"
 export LLMGE_HOSTNAME_FILE="${LLMGE_HOSTNAME_FILE:-hostname.log}"
 export LLMGE_SEARCH_SEED="${LLMGE_SEARCH_SEED:-242}"
 
-# Run Python script
-uv run python run_improved.py --checkpoints surrogate_precision_seed1_run/island_llama3_naslib-efficiency --global_path surrogate_precision_seed1_run/global_data --llm_model llama3 --prompt_group naslib/efficiency
+# Run Python script (overwritten by islands job templates; keep a solo-SURROGATE default)
+uv run python run_improved.py --checkpoints surrogate_precision_run/island_llama3_naslib-efficiency --global_path surrogate_precision_run/global_data --llm_model llama3 --prompt_group naslib/efficiency

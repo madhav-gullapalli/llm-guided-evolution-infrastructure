@@ -2,7 +2,7 @@
 #SBATCH --job-name=IslandsController
 #SBATCH -N1 --ntasks-per-node=16
 #SBATCH --mem-per-gpu=16G
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH --output=run_job_outputs/islands/Report_islands-%j.out
 #SBATCH --gres=gpu:1
 #SBATCH -C intel
@@ -29,11 +29,12 @@ export LLMGE_EVOLUTION_MODE=SURROGATE
 # Change to the repository root
 cd /storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure
 
-# Fresh run dir for τ+Precision fitness (do not resume old surrogate_islands_run)
+# Solo SURROGATE τ+Precision fitness (override LLMGE_EVOLUTION_MODE=BOTH for coev)
 uv run python islands_wrapper.py surrogate_precision_run \
     --num_islands 3 \
     --llms llama3 \
     --prompt_groups "naslib/general,naslib/ranking,naslib/efficiency"
+
 
 if (( COUNT > 1 )); then
     NEXT_COUNT=$((COUNT - 1))

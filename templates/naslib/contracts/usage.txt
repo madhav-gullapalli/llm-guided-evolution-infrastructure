@@ -1,0 +1,11 @@
+USAGE COMPONENT CONTRACT (required for the evaluator):
+This block controls search policy; the surrogate is supplied by a separately evolved module.
+Keep class SurrogateUsageOptimizer(Bananas), __init__(self, config, zc_api=None, predictor_cls=None, predictor_kwargs=None), _get_train, _get_ensemble, _acquisition, _get_best_candidates, and new_epoch. Keep parent initialization and the injected predictor_cls/predictor_kwargs. Do not replace, retrain with a different class, or reconfigure the paired surrogate.
+_get_train returns two parallel lists of length N: architecture objects and scalar accuracies.
+_get_ensemble must return the NASLib Ensemble; install exactly self.num_ensemble injected predictors as the seed does. Preserve the _get_ensemble call in new_epoch: evaluation observes fit/query through this hook.
+ensemble.query(architectures, info) returns an array of shape (E,N): E ensemble members, N candidate architectures. Mean and standard deviation reduce axis=0 and each have shape (N,). NEVER flatten the ensemble predictions into (E*N,): this causes the observed (32,) versus (96,) failure.
+The acquisition callable accepts a list of architectures plus optional info and returns exactly one finite scalar score per architecture, shape (N,). Handle zero variance safely. Higher score means preferred candidate.
+_get_best_candidates receives a Python list of candidate model objects. Score candidate.arch values, then use scalar integer indices to select objects. Do not index a Python list with a NumPy index array. Preserve a nonempty batch of at most self.k candidates when candidates are available.
+Preserve initialization sampling, self.next_batch, architecture-hash removal, and _set_scores calls; each new_epoch evaluates one model. Keep training/test architecture bookkeeping and evaluation budgets intact.
+Every newly referenced symbol must be imported INSIDE the editable block: e.g. import random if using random, import numpy as np, or from scipy.stats import norm. Modules have separate globals; do not depend on the paired surrogate's imports.
+Return only the entire editable block in one Python code fence, with brief explanation at most. No examples or additional code fences. These requirements override generic requests for demonstrations.

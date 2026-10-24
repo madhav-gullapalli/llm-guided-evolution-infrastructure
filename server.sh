@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=LLMGE01_Server
-#SBATCH -t 2:00:00
+#SBATCH -t 4:00:00
 #SBATCH --nodes=1
 #SBATCH -G 2
 #SBATCH -C "H200"
@@ -53,6 +53,7 @@ PY
 export SERVER_HOSTNAME=$(hostname)
 # Jobs submitted below inherit this; src/cfg/constants.py reads it as PORT.
 export LLMGE_PORT=18631
+
 
 HOSTNAME_FILE=$(pwd)"/hostname.log"
 

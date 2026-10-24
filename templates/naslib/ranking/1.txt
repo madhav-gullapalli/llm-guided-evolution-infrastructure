@@ -1,8 +1,12 @@
-This code belongs to a NAS surrogate where the main objective is to rank candidate architectures well enough to guide search. The pipeline uses those rankings to decide which architectures deserve expensive evaluation.
+Edit the surrogate usage optimizer component of a NASLib search pipeline.
+Make one focused change that works with the existing default settings. Preserve the surrounding API and all existing public names and signatures.
 
-Improve this code with ranking quality as the top priority. Favor edits that would plausibly improve Kendall Tau or pairwise ordering quality between predicted and true architecture performance, even if absolute regression error is not minimized, because correct ordering is what drives useful search decisions.
+Candidate direction: Improve the acquisition score with a small, numerically stable exploration/exploitation change.
+Choose concrete values or a precise scoring change; avoid a broad rewrite, new dependencies, nested hyperparameter searches, demonstrations, or replacement of the paired component.
 
-The current code block:
+Return the entire replacement editable block in one Python code fence, including any new imports.
+
+The current editable code block:
 ```python
 {}
 ```

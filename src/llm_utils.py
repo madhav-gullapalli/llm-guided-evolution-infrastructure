@@ -50,15 +50,14 @@ def retrieve_base_code(idx):
     return split_file(base_network)[1:][idx].strip()
 
 def clean_code_from_llm(code_from_llm):
-    """Cleans the code received from LLM."""
-    try:
-        # Extract and clean code assuming it is enclosed in triple backticks
-        return '\n'.join(code_from_llm.strip().split("```")[1].split('\n')[1:]).strip()
-    except (IndexError, AttributeError) as e:
-        # Print an error message if the code extraction fails
-        print("Runtime Error: No code was generated or the format is incorrect.")
-        return "ERROR"  # Return ERROR
-        #return ""
+    """Return the longest fenced block, skipping introductory code snippets."""
+    if isinstance(code_from_llm, str):
+        blocks = re.findall(r"```[^\r\n`]*\r?\n(.*?)```", code_from_llm, re.DOTALL)
+        blocks = [block.strip() for block in blocks if block.strip()]
+        if blocks:
+            return max(blocks, key=len)
+    print("Runtime Error: No code was generated or the format is incorrect.")
+    return "ERROR"
 
 def get_llm_code_generator(llm_model):
     # Prefer the local uvicorn-hosted model when configured
@@ -369,7 +368,7 @@ def llm_code_qc(code_from_llm, base_code, generate_text):
     
     res = generate_text(prompt2llm) # clean txt
     code_from_llm = res[0]["generated_text"]
-    code_from_llm = '\n'.join(code_from_llm.strip().split("```")[1].split('\n')[1:]).strip()
+    code_from_llm = clean_code_from_llm(code_from_llm)
     return code_from_llm
 
 
