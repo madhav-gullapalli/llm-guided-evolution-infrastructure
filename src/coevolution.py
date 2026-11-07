@@ -111,3 +111,58 @@ def rank_statistics(ranks, records):
             for name, values in ranks.items()
         },
     }
+
+
+class UsageFitness(base.Fitness):
+    weights = (1.0, -1.0)  # Maximize paired accuracy, minimize oracle real evaluations.
+
+
+def distinct_objectives(records, candidate_ids, individual_metrics, usage_metrics,
+                        pair_score=max):
+    """Aggregate raw pair accuracies before assigning each candidate's objectives."""
+    paired = {name: {gene: [] for gene in ids} for name, ids in candidate_ids.items()}
+    for record in records:
+        if not record.success:
+            continue
+        accuracy = record.fitness.values[1]
+        if not math.isfinite(accuracy):
+            continue
+        # A surviving candidate keeps scores from its earlier successful partners,
+        # including partners dropped during regeneration at this barrier.
+        for name, gene in record.source_ids.items():
+            if gene in paired[name]:
+                paired[name][gene].append(float(accuracy))
+    objectives = {name: {} for name in candidate_ids}
+    for name, metrics, standalone in (
+            ("surrogate", individual_metrics, "kendall_tau"),
+            ("usage", usage_metrics, "real_evaluations")):
+        for gene, values in paired[name].items():
+            individual = metrics.get(gene)
+            if not values or individual is None:
+                continue
+            value = individual[standalone]
+            if not math.isfinite(value) or (name == "usage" and value < 0):
+                continue
+            score = float(pair_score(values))
+            if not math.isfinite(score):
+                raise ValueError("Pair score aggregation must return a finite float")
+            objectives[name][gene] = (value, score) if name == "surrogate" else (score, value)
+    return objectives
+
+
+def rank_distinct(records, candidate_ids, individual_metrics, usage_metrics, pair_score=max):
+    """Pareto-rank candidate objective vectors separately for each population."""
+    # Keep raw pair fronts for diagnostics; they do not decide mode-4 selection.
+    active = [record for record in records
+              if all(gene in candidate_ids[name] for name, gene in record.source_ids.items())]
+    rank_pairs(active, candidate_ids)
+    objectives = distinct_objectives(records, candidate_ids, individual_metrics,
+                                     usage_metrics, pair_score)
+    ranks = {}
+    for name, fitness, invalid in (
+            ("surrogate", SearchFitness, INVALID_SEARCH_FITNESS),
+            ("usage", UsageFitness, (-float("inf"), float("inf")))):
+        candidates = [PairRecord(gene, {name: gene}, values, fitness, invalid)
+                      for gene, values in objectives[name].items()]
+        ranks[name] = rank_pairs(candidates, {name: candidate_ids[name]})[name]
+    return ranks

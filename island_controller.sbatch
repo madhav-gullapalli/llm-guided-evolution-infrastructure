@@ -30,7 +30,11 @@ cd /home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure
 uv run python islands_wrapper.py titanic_islands_run \
     --num_islands 1 \
     --llms llama3 \
-    --prompt_groups "naslib/general"
+    --prompt_groups "naslib/general" || {
+    controller_status=$?
+    echo "FATAL: island controller failed (exit $controller_status); stopping restart chain" >&2
+    exit "$controller_status"
+}
 
 if (( COUNT > 1 )); then
     NEXT_COUNT=$((COUNT - 1))

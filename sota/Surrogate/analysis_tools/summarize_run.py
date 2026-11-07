@@ -266,6 +266,38 @@ def fmt(value) -> str:
     return str(value)
 
 
+def coevolution_rows(run_dir: Path, args) -> Optional[list[dict]]:
+    """Summarize evaluated pairs, whose source genes are not evaluated alone."""
+    reports = [json.loads(p.read_text()) for p in sorted((run_dir / "history").glob("generation_*.json"))]
+    if not reports or not all("matches" in report for report in reports):
+        return None
+    rows = []
+    for report in reports:
+        for match in report["matches"]:
+            gene = match["match_id"]
+            out_dir = find_output_dir(args.run_root, gene, args.dataset, args.seed)
+            success = match["success"]
+            tau = match["objectives"][0] if success else None
+            # The result text's second objective is accuracy, not MSE.
+            mse = None
+            if out_dir is not None:
+                files = sorted(out_dir.glob("surrogate_metrics_*.json"))
+                if files:
+                    values = json.loads(files[-1].read_text()).get("mse", [])
+                    mse = values[-1] if values else None
+            rows.append({
+                "gene": gene, "generation": report["generation"],
+                "parent": ";".join(match.get("source_ids", {}).values()),
+                "mutation": "MATCH", "mode": "COEVOLUTION", "island": "paired",
+                "status": "ok" if success else "failed_in_search" if out_dir else "failed_before_search",
+                "kendall_tau": tau, "mse": mse,
+                **(ranking_metrics(out_dir) if success else {}),
+                **{k: v for k, v in search_metrics(out_dir).items() if not k.startswith("_")},
+                "output_dir": str(out_dir.relative_to(SURROGATE_DIR)) if out_dir else "",
+            })
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", type=Path, required=True, help="Run folder, e.g. surrogate_islands_run")
@@ -282,62 +314,64 @@ def main() -> None:
     if not (run_dir / "global_data").is_dir():
         raise SystemExit(f"No global_data/ in {run_dir}")
 
-    hist, ancestry, first_gen = load_global_data(run_dir)
-    genes = (set(hist) | set(ancestry)) - {"model"}
+    rows = coevolution_rows(run_dir, args)
+    if rows is None:
+        hist, ancestry, first_gen = load_global_data(run_dir)
+        genes = (set(hist) | set(ancestry)) - {"model"}
 
-    island_of = islands_from_checkpoints(run_dir)
-    missing = genes - set(island_of)
-    if missing:
-        for gene, island in islands_from_logs(args.island_logs, missing).items():
-            island_of.setdefault(gene, island)
+        island_of = islands_from_checkpoints(run_dir)
+        missing = genes - set(island_of)
+        if missing:
+            for gene, island in islands_from_logs(args.island_logs, missing).items():
+                island_of.setdefault(gene, island)
 
-    scores = {g: read_results(args.results_dir, g) for g in genes}
-    rows = []
-    for gene in genes:
-        entry = ancestry.get(gene, {"GENES": [gene], "MUTATE_TYPE": ["CREATED"]})
-        parents = parents_from_ancestry(gene, entry)
-        mutation = entry.get("MUTATE_TYPE", ["CREATED"])[-1]
-        generation = 0 if mutation == "CREATED" else first_gen.get(gene, "")
+        scores = {g: read_results(args.results_dir, g) for g in genes}
+        rows = []
+        for gene in genes:
+            entry = ancestry.get(gene, {"GENES": [gene], "MUTATE_TYPE": ["CREATED"]})
+            parents = parents_from_ancestry(gene, entry)
+            mutation = entry.get("MUTATE_TYPE", ["CREATED"])[-1]
+            generation = 0 if mutation == "CREATED" else first_gen.get(gene, "")
 
-        island = island_of.get(gene, "")
-        for p in parents:
-            if island:
-                break
-            island = island_of.get(p, "")
+            island = island_of.get(gene, "")
+            for p in parents:
+                if island:
+                    break
+                island = island_of.get(p, "")
 
-        out_dir = find_output_dir(args.run_root, gene, args.dataset, args.seed)
-        tau, mse = scores[gene]
-        metrics = search_metrics(out_dir)
-        if tau is not None:
-            status = "ok"
-        elif out_dir is None:
-            status = "failed_before_search"
-        else:
-            status = "failed_in_search"
+            out_dir = find_output_dir(args.run_root, gene, args.dataset, args.seed)
+            tau, mse = scores[gene]
+            metrics = search_metrics(out_dir)
+            if tau is not None:
+                status = "ok"
+            elif out_dir is None:
+                status = "failed_before_search"
+            else:
+                status = "failed_in_search"
 
-        same_as_parent = ""
-        if tau is not None and parents:
-            same_as_parent = any(
-                scores.get(p, (None, None)) == (tau, mse) or read_results(args.results_dir, p) == (tau, mse)
-                for p in parents
-            )
+            same_as_parent = ""
+            if tau is not None and parents:
+                same_as_parent = any(
+                    scores.get(p, (None, None)) == (tau, mse) or read_results(args.results_dir, p) == (tau, mse)
+                    for p in parents
+                )
 
-        rows.append({
-            "gene": gene,
-            "island": island.removeprefix("island_"),
-            "generation": generation,
-            "parent": ";".join(parents),
-            "mutation": mutation,
-            "mode": detect_mode(args.models_dir, gene),
-            "family": out_dir.parent.name.replace("LLM_NB201_Predictor_", "").replace("_bananas", "") if out_dir else "",
-            "status": status,
-            "kendall_tau": tau,
-            "mse": mse,
-            **(ranking_metrics(out_dir) if tau is not None else {}),
-            **{k: v for k, v in metrics.items() if not k.startswith("_")},
-            "same_score_as_parent": same_as_parent,
-            "output_dir": str(out_dir.relative_to(SURROGATE_DIR)) if out_dir else "",
-        })
+            rows.append({
+                "gene": gene,
+                "island": island.removeprefix("island_"),
+                "generation": generation,
+                "parent": ";".join(parents),
+                "mutation": mutation,
+                "mode": detect_mode(args.models_dir, gene),
+                "family": out_dir.parent.name.replace("LLM_NB201_Predictor_", "").replace("_bananas", "") if out_dir else "",
+                "status": status,
+                "kendall_tau": tau,
+                "mse": mse,
+                **(ranking_metrics(out_dir) if tau is not None else {}),
+                **{k: v for k, v in metrics.items() if not k.startswith("_")},
+                "same_score_as_parent": same_as_parent,
+                "output_dir": str(out_dir.relative_to(SURROGATE_DIR)) if out_dir else "",
+            })
 
     # In a USE run, a gene without SurrogateUsageOptimizer is scored with stock BANANAS by eval.py.
     modes = [r["mode"] for r in rows if r["mode"]]
@@ -371,8 +405,9 @@ def main() -> None:
             print(f"  best top-10% tau:  {best_top['gene']}  top10_tau={best_top['top10_tau']:.4f}")
             print(f"  parameter-count baseline (seed {args.seed} test set): "
                   f"tau={base['param_count_tau']:.4f}  top10_tau={base['param_count_top10_tau']:.4f}")
-        no_ops = sum(1 for r in ok if r["same_score_as_parent"] is True)
-        print(f"  same score as parent: {no_ops}/{len(ok)}")
+        if not any(r.get("mode") == "COEVOLUTION" for r in ok):
+            no_ops = sum(1 for r in ok if r.get("same_score_as_parent") is True)
+            print(f"  same score as parent: {no_ops}/{len(ok)}")
 
 
 if __name__ == "__main__":

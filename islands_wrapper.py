@@ -276,8 +276,8 @@ if __name__ == "__main__":
     parser.add_argument('--prompt_group', type=str, help='Deprecated: single prompt group to apply to all islands', default=None)
     # Parse the arguments
     args = parser.parse_args()
-    # MODE=3 selects the paired worker; modes 1/2 retain solo islands.
-    if globals().get("MODE") == 3:
+    # Modes 3/4 select the paired worker; modes 1/2 retain solo islands.
+    if globals().get("MODE") in (3, 4):
         spawn_coevolution_islands(args.checkpoints)
         raise SystemExit(0)
     island_script = "src/island_temp_script.sh"

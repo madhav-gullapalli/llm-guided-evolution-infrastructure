@@ -29,7 +29,7 @@ def test_metadata_inherits_existing_constants():
 def test_existing_controller_dispatches_population_metadata(monkeypatch):
     tree = ast.parse((REPO / "islands_wrapper.py").read_text())
     guard = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
-                 and ast.unparse(node.test) == "globals().get('MODE') == 3")
+                 and ast.unparse(node.test) == "globals().get('MODE') in (3, 4)")
     calls = []
     namespace = {"MODE": 3, "args": SimpleNamespace(checkpoints="existing_run"),
                  "spawn_coevolution_islands": calls.append}
@@ -208,7 +208,7 @@ from src.cfg import constants, constants_surrogate
 import run_improved
 for name in ['SEED_NETWORK', 'DNA_TXT', 'LLM_LLAMA3', 'FITNESS_WEIGHTS', 'ISLANDS_BASH_SCRIPT_TEMPLATE']:
     assert hasattr(constants, name), name
-for mode, seed in [('SURROGATE', 'model.py'), ('USE', 'usage_bananas.py')]:
+for mode, seed in [('SURROGATE', 'model.py'), ('USE', 'usage_bananas.py'), ('BOTH', 'model.py'), ('BOTH_DISTINCT', 'model.py'), ('4', 'model.py')]:
     os.environ['LLMGE_EVOLUTION_MODE'] = mode
     importlib.reload(constants_surrogate)
     importlib.reload(constants)
@@ -224,7 +224,7 @@ for mode, seed in [('SURROGATE', 'model.py'), ('USE', 'usage_bananas.py')]:
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3])
+@pytest.mark.parametrize("mode", [1, 2, 3, 4])
 def test_numeric_mode_selects_coevolution_only_for_both(monkeypatch, mode):
     monkeypatch.delenv("LLMGE_EVOLUTION_MODE", raising=False)
     path = REPO / "src/cfg/constants_surrogate.py"
@@ -241,9 +241,9 @@ def test_numeric_mode_selects_coevolution_only_for_both(monkeypatch, mode):
     namespace.update(args=SimpleNamespace(checkpoints="mode_run"), spawn_coevolution_islands=calls.append)
     tree = ast.parse((REPO / "islands_wrapper.py").read_text())
     guard = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
-                 and ast.unparse(node.test) == "globals().get('MODE') == 3")
+                 and ast.unparse(node.test) == "globals().get('MODE') in (3, 4)")
     code = compile(ast.Module(body=[guard], type_ignores=[]), "islands_wrapper.py", "exec")
-    if mode == 3:
+    if mode in (3, 4):
         with pytest.raises(SystemExit):
             exec(code, namespace)
         assert calls == ["mode_run"]

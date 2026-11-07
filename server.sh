@@ -3,7 +3,7 @@
 #SBATCH -t 4:00:00
 #SBATCH --nodes=1
 #SBATCH -G 2
-#SBATCH -C "H200"
+#SBATCH -C "H200|H100"
 #SBATCH --mem 160G
 #SBATCH -c 16
 #SBATCH --exclude=atl1-1-03-014-16-0

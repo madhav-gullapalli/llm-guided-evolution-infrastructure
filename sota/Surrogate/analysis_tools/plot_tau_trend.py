@@ -68,7 +68,9 @@ def main() -> None:
         ax.annotate(f"n={len(by_gen[g])}", (g, 0), textcoords="offset points", xytext=(0, 4),
                     ha="center", fontsize=8, color="gray", xycoords=("data", "axes fraction"))
     ax.set_xticks(gens)
-    ax.set_xlabel("LLM-GE generation (genes created in that generation)")
+    paired = any(r.get("mode") == "COEVOLUTION" for r in rows)
+    ax.set_xlabel("Coevolution generation (evaluated pairs)" if paired else
+                  "LLM-GE generation (genes created in that generation)")
     ax.set_ylabel("Kendall τ on held-out test architectures")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(fontsize=8, loc="center left", bbox_to_anchor=(1.01, 0.5))

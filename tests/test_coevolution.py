@@ -165,6 +165,24 @@ def local_jobs(monkeypatch, tmp_path):
         module_name = args[args.index("--model") + 1]
         variants = Path(args[args.index("--variant_dir") + 1])
         assert args[args.index("python") + 1] == legacy.TRAIN_FILE
+        if "--usage_individual" in args:
+            assert "--coevolution" not in args
+            assert module_name.startswith("model_usage_individual_")
+            module = import_file(variants / f"{module_name}.py")
+            assert hasattr(module, "SurrogateUsageOptimizer")
+            assert not hasattr(module, "get_surrogate_config")
+            evaluation_calls.append(module_name)
+            (results / f"{module_name.removeprefix('model_')}_results.txt").write_text("100,900")
+            return SimpleNamespace(returncode=0, stdout="Job done", stderr="")
+        if "--surrogate_individual" in args:
+            assert "--coevolution" not in args
+            assert module_name.startswith("model_surrogate_individual_")
+            module = import_file(variants / f"{module_name}.py")
+            assert hasattr(module, "get_surrogate_config")
+            assert not hasattr(module, "SurrogateUsageOptimizer")
+            evaluation_calls.append(module_name)
+            (results / f"{module_name.removeprefix('model_')}_results.txt").write_text("0.75,0.01")
+            return SimpleNamespace(returncode=0, stdout="Job done", stderr="")
         assert module_name.startswith("model_coev_")
         module = import_file(variants / f"{module_name}.py")
         assert module.get_surrogate_config.__module__.endswith("_source_0")
@@ -527,3 +545,39 @@ def test_component_prompts_include_contract_and_fixed_header(local_jobs, monkeyp
         assert seed.read_text().split('# --OPTION--', 1)[0] in rendered
         assert all(term in rendered for term in required)
         assert 'INSIDE the editable block' in rendered
+
+
+def test_distinct_smoke_selection_checkpoint_and_resume(local_jobs, tmp_path, monkeypatch):
+    coev, _, evaluation_calls = local_jobs
+    monkeypatch.setattr(coev.config, "MODE", 4)
+    settings = copy.deepcopy(coev.config.POPULATIONS)
+    for cfg in settings.values():
+        cfg.update(start_population_size=3, population_size=3, num_elites=2,
+                   crossover_probability=0.0, mutation_probability=0.0)
+    monkeypatch.setattr(coev.config, "POPULATIONS", settings)
+    monkeypatch.setattr(coev.config, "matches", 9)
+    monkeypatch.setattr(coev.legacy, "migration_gen", 1)
+    root = tmp_path / "distinct"
+    coev.run(root)
+    checkpoint, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
+    metrics = checkpoint["workers"]["surrogate"]["individual_metrics"]
+    assert len(metrics) == 3
+    assert all(score["kendall_tau"] == 0.75 for score in metrics.values())
+    assert len([name for name in evaluation_calls if name.startswith("model_surrogate_individual_")]) == 3
+    assert len([name for name in evaluation_calls if name.startswith("model_usage_individual_")]) == 3
+    assert len([name for name in evaluation_calls if name.startswith("model_coev_")]) == 9
+    import json
+    report = json.loads(Path(checkpoint["history"]).read_text())
+    assert report["individual_metrics"] == metrics
+    usage_metrics = checkpoint["workers"]["usage"]["individual_metrics"]
+    assert len(usage_metrics) == 3
+    assert report["usage_individual_metrics"] == usage_metrics
+    assert set(map(tuple, report["candidate_objectives"]["surrogate"].values())) == {(0.75, 1.0)}
+    assert set(map(tuple, report["candidate_objectives"]["usage"].values())) == {(1.0, 100)}
+    assert all(m["real_evaluations"] == 100 for m in usage_metrics.values())
+    assert all(match["objectives"] == [0.9, 1.0] for match in report["matches"])
+    coev.run(root)
+    assert (root / "checkpoint_gen_2.pkl").exists()
+    # Unchanged surviving source IDs reuse their independent score after resume.
+    assert len([name for name in evaluation_calls if name.startswith("model_surrogate_individual_")]) == 3
+    assert len([name for name in evaluation_calls if name.startswith("model_usage_individual_")]) == 3

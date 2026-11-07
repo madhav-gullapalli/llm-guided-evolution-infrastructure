@@ -1,5 +1,7 @@
 import os
 import time
+import sys
+import traceback
 import torch
 import transformers
 from fastapi import FastAPI, HTTPException
@@ -306,5 +308,12 @@ print('Server running with server-side batching!')
 @app.on_event("startup")
 async def preload_model():
     """Load the model at process start so first request is fast."""
-    model = LLMModel()
-    await model.start_batch_processor()
+    try:
+        model = LLMModel()
+        await model.start_batch_processor()
+    except BaseException:
+        print(f"FATAL: model startup failed on {os.uname().nodename}",
+              file=sys.stdout, flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        raise

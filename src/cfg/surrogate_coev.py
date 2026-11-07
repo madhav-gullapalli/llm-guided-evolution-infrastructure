@@ -26,3 +26,8 @@ COMPOSITION_EXPORTS = {
     "build_predictor_kwargs": "surrogate",
     "SurrogateUsageOptimizer": "usage",
 }
+
+
+def aggregate_pair_scores(values: list[float]) -> float:
+    """Mode 4: reduce successful pairs' best accuracies to one candidate score."""
+    return max(values)

@@ -12,10 +12,11 @@ class EvolutionMode(IntEnum):
     SURROGATE = 1
     USE = 2
     BOTH = 3  # Paired surrogate/usage coevolution.
+    BOTH_DISTINCT = 4  # Mixed coevolution metrics with distinct metrics
 
 
-# 1: solo surrogate; 2: solo usage; 3: paired coevolution.
-MODE = 3
+# 1: solo surrogate; 2: solo usage; 3/4: paired coevolution.
+MODE = 4
 # The existing environment override accepts names or numbers.
 _evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", str(MODE)).upper()
 evolution_mode = EvolutionMode[
@@ -33,6 +34,7 @@ _seed_by_mode = {
     EvolutionMode.SURROGATE: 'model.py',
     EvolutionMode.USE: f"usage_{os.getenv('LLMGE_USAGE_SEED', 'bananas')}.py",
     EvolutionMode.BOTH: 'model.py',  # Import-compatible default; workers use their own seeds
+    EvolutionMode.BOTH_DISTINCT: 'model.py',
 }
 SEED_NETWORK = os.path.join(SOTA_ROOT, _seed_by_mode[evolution_mode])
 MODEL = "model"

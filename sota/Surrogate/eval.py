@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.cfg.constants_surrogate import (
     MODEL as DEFAULT_MODEL_MODULE,
+    MODE, EvolutionMode,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
     SURROGATE_RESULTS_DIR,
@@ -47,11 +48,15 @@ parser.add_argument('--debug', action='store_true', help='stores trajectory_log 
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
+parser.add_argument("--usage_individual", action="store_true", help="Mode 4: evaluate usage with a perfect surrogate")
+parser.add_argument("--surrogate_individual", action="store_true", help="Evaluate a surrogate without a usage optimizer")
 parser.add_argument("--coevolution", action="store_true", help="Keep the paired usage optimizer policy")
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
-_coevolution = custom_args.coevolution
+if custom_args.usage_individual and MODE != EvolutionMode.BOTH_DISTINCT:
+    parser.error("--usage_individual requires BOTH_DISTINCT (mode 4)")
+_coevolution = custom_args.coevolution or custom_args.usage_individual
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -88,8 +93,11 @@ if str(_script_dir) not in sys.path:
 sys.path.append(_variant_dir)
 try:
     _model_module = importlib.import_module(args.model)
-    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+    surrogate_config = ({"name": "oracle"} if args.usage_individual else
+                        _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH))
 except Exception as exc:
+    if args.surrogate_individual or args.usage_individual:
+        raise
     # Keep the evolution run moving when a generated variant is malformed.
     # The explicit log prevents this fallback from being mistaken for a
     # successful evaluation of the generated source.
@@ -483,6 +491,52 @@ NasBench201SearchSpace.__init__ = fast_hollow_init
 NasBench201SearchSpace.get_op_indices = safe_get_op_indices
 
 print("[Patch] NasBench201SearchSpace is now hollow and safe.")
+
+
+if args.usage_individual:
+    from naslib.search_spaces.core.query_metrics import Metric
+    from sota.Surrogate.usage_evaluation import evaluate_usage
+    from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
+
+    utils.set_seed(SAMPLE_SEED)
+    usage_metrics = evaluate_usage(
+        lambda predictor_factory: _model_module.SurrogateUsageOptimizer(
+            config, predictor_cls=predictor_factory, predictor_kwargs={}),
+        NasBench201SearchSpace, Metric.VAL_ACCURACY, config.dataset, dataset_api,
+        budget=SEARCH_BUDGET,
+    )
+    os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
+    result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
+    result_path.with_suffix(".json").write_text(json.dumps(usage_metrics, indent=2) + "\n")
+    result_path.write_text(f"{usage_metrics['real_evaluations']},{usage_metrics['surrogate_predictions']}")
+    print("job done")
+    raise SystemExit(0)
+
+
+if args.surrogate_individual:
+    from naslib.search_spaces.core.query_metrics import Metric
+    from sota.Surrogate.surrogate_evaluation import evaluate_surrogate, SAMPLE_SEED
+
+    # Both fitting and held-out measurements are independent of search policy.
+    utils.set_seed(SAMPLE_SEED)
+    predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+
+    def independent_architecture(spec):
+        arch = NasBench201SearchSpace()
+        arch.set_op_indices(list(spec))
+        return arch
+
+    individual_metrics = evaluate_surrogate(
+        lambda: LLM_NB201_Predictor(**predictor_kwargs),
+        independent_architecture,
+        lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
+    )
+    os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
+    result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
+    result_path.with_suffix(".json").write_text(json.dumps(individual_metrics, indent=2) + "\n")
+    result_path.write_text(f"{individual_metrics['kendall_tau']},{individual_metrics['mse']}")
+    print("job done")
+    raise SystemExit(0)
 
 
 search_results = {}
