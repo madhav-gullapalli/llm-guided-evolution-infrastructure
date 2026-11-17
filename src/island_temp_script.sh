@@ -15,10 +15,13 @@ module load cuda
 
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 # Bash defaults; braces doubled for Python str.format.
-export LLMGE_EVOLUTION_MODE="${LLMGE_EVOLUTION_MODE:-SURROGATE}"
+# Default BOTH = paired coevolution (τ + best individual). Archive Precision solo:
+# LLMGE_EVOLUTION_MODE=SURROGATE LLMGE_FITNESS_MODE=precision
+export LLMGE_EVOLUTION_MODE="${LLMGE_EVOLUTION_MODE:-BOTH}"
 export LLMGE_PORT="${LLMGE_PORT:-18631}"
 export LLMGE_HOSTNAME_FILE="${LLMGE_HOSTNAME_FILE:-hostname.log}"
 export LLMGE_SEARCH_SEED="${LLMGE_SEARCH_SEED:-242}"
+export LLMGE_FITNESS_MODE="${LLMGE_FITNESS_MODE:-mse}"
 
-# Run Python script (overwritten by islands job templates; keep a solo-SURROGATE default)
-uv run python run_improved.py --checkpoints surrogate_precision_run/island_llama3_naslib-efficiency --global_path surrogate_precision_run/global_data --llm_model llama3 --prompt_group naslib/efficiency
+# Run Python script
+uv run python run_improved.py --checkpoints surrogate_mse_seed1_run/island_llama3_naslib-efficiency --global_path surrogate_mse_seed1_run/global_data --llm_model llama3 --prompt_group naslib/efficiency

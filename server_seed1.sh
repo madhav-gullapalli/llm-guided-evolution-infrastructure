@@ -8,7 +8,7 @@
 #SBATCH -c 16
 #SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/server/slurm-seed1-%j.out
-echo "launching LLM Server (precision fitness, BANANAS search seed 1)"
+echo "launching ARCHIVE LLM Server (precision fitness, seed 1; see tmp/PRECISION_ARCHIVE.md)"
 
 COUNT=${1:-1}
 EXTRA_FILE=/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/extra_segments_seed1.txt
@@ -52,6 +52,7 @@ export SERVER_HOSTNAME=$(hostname)
 export LLMGE_PORT=18633
 export LLMGE_HOSTNAME_FILE=hostname_seed1.log
 export LLMGE_EVOLUTION_MODE=SURROGATE
+export LLMGE_FITNESS_MODE=precision
 export LLMGE_SEARCH_SEED=1
 
 HOSTNAME_FILE="$(pwd)/hostname_seed1.log"

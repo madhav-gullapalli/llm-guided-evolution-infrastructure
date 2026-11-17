@@ -14,9 +14,10 @@ class EvolutionMode(IntEnum):
     BOTH = 3  # Paired surrogate/usage coevolution.
 
 
-# 1: solo surrogate; 2: solo usage; 3: paired coevolution.
-# Default SURROGATE so Precision fitness runs stay comparable; set LLMGE_EVOLUTION_MODE=BOTH for coev.
-MODE = 1
+# 1: solo surrogate; 2: solo usage; 3: paired coevolution (default / team focus).
+# Archive-only Precision solo runs: export LLMGE_EVOLUTION_MODE=SURROGATE and
+# LLMGE_FITNESS_MODE=precision (see tmp/PRECISION_ARCHIVE.md).
+MODE = 3
 # The existing environment override accepts names or numbers.
 _evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", str(MODE)).upper()
 evolution_mode = EvolutionMode[
@@ -146,9 +147,24 @@ EVAL_RUNLINE = (
 """
 Evolution Constants/Params
 """
-# Primary Pareto objectives: maximize Kendall τ and Precision@top-10%.
-# MSE is written as a third field in results/*.txt and used only as a tie-breaker.
-FITNESS_WEIGHTS = (1.0, 1.0)  # maximize kendall_tau, maximize precision_top10
+# Solo-SURROGATE second objective (ignored when MODE=BOTH / coevolution).
+# Default mse matches implement-coevolution-mvp solo path. precision is archive-only
+# (tmp/PRECISION_ARCHIVE.md); set LLMGE_FITNESS_MODE=precision to reproduce those runs.
+# Solo eval writes tau,precision_top10,mse; run_improved selects which pair is fitness.
+# Coevolution eval writes tau,best_accuracy (SearchFitness weights 1,1).
+_FITNESS_MODE = os.getenv("LLMGE_FITNESS_MODE", "mse").strip().lower()
+if _FITNESS_MODE not in ("precision", "mse"):
+    raise ValueError(f"LLMGE_FITNESS_MODE must be 'precision' or 'mse', got {_FITNESS_MODE!r}")
+FITNESS_MODE = _FITNESS_MODE
+if MODE == EvolutionMode.BOTH:
+    # Coevolution fitness is (kendall_tau, best_validation_accuracy): maximize both.
+    FITNESS_WEIGHTS = (1.0, 1.0)
+elif FITNESS_MODE == "mse":
+    # Solo / MVP legacy baseline: maximize Kendall τ, minimize MSE.
+    FITNESS_WEIGHTS = (1.0, -1.0)
+else:
+    # Archive: maximize Kendall τ and Precision@top-10%; MSE is tie-break only.
+    FITNESS_WEIGHTS = (1.0, 1.0)
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10

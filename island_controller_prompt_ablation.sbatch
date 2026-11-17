@@ -23,14 +23,18 @@ module load cuda
 module load uv
 
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
+# ARCHIVE: Precision prompt ablation (tmp/PRECISION_ARCHIVE.md)
 export LLMGE_EVOLUTION_MODE=SURROGATE
+export LLMGE_FITNESS_MODE=precision
 # Match server_prompt_ablation.sh
 export LLMGE_PORT=18632
 export LLMGE_HOSTNAME_FILE=hostname_prompt_ablation.log
+# Harder BANANAS search seed (242's random start is unusually strong ~73%).
+export LLMGE_SEARCH_SEED=1
 
 cd /storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure
 
-uv run python islands_wrapper.py surrogate_precision_prompt_run \
+uv run python islands_wrapper.py surrogate_precision_prompt_seed1_run \
     --num_islands 3 \
     --llms llama3 \
     --prompt_groups "naslib_precision/general,naslib_precision/ranking,naslib_precision/efficiency"

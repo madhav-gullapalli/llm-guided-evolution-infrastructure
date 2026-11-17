@@ -579,10 +579,18 @@ def check4results(gene_id):
             GLOBAL_DATA[gene_id]['status'] = 'completed'
             GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
             return False
-        # New format: tau,precision_top10,mse  |  legacy: tau,mse (reject — wrong objective count)
-        if len(parts) >= 3:
+        # Coevolution writes tau,best_accuracy (both maximized). Solo runs write
+        # tau,precision_top10,mse; their fitness pair depends on LLMGE_FITNESS_MODE.
+        if len(parts) == 2:
+            GLOBAL_DATA[gene_id]['best_accuracy'] = parts[1]
             fitness = (parts[0], parts[1])
+        elif len(parts) >= 3:
             GLOBAL_DATA[gene_id]['mse'] = parts[2]
+            GLOBAL_DATA[gene_id]['precision_top10'] = parts[1]
+            if FITNESS_MODE == "mse":
+                fitness = (parts[0], parts[2])  # τ, MSE (minimize)
+            else:
+                fitness = (parts[0], parts[1])  # τ, Precision@10% (maximize)
         else:
             print(
                 f"\t☠ Expected tau,precision,mse in results for {gene_id}; got {parts}",
@@ -596,7 +604,7 @@ def check4results(gene_id):
             GLOBAL_DATA[gene_id]['status'] = 'completed'
             GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
             return False
-        if not np.isfinite(GLOBAL_DATA[gene_id]['mse']):
+        if 'mse' in GLOBAL_DATA[gene_id] and not np.isfinite(GLOBAL_DATA[gene_id]['mse']):
             GLOBAL_DATA[gene_id]['mse'] = float('inf')
 
         GLOBAL_DATA[gene_id]['status'] = 'completed'

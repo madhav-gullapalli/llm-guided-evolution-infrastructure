@@ -511,24 +511,10 @@ for i in range(NUM_TRIALS):
         set_config_save()
 
         # 1. Select Optimizer
-        # USE-mode genes define SurrogateUsageOptimizer; SURROGATE-mode genes (model.py) do not.
-        usage_optimizer_cls = getattr(_model_module, "SurrogateUsageOptimizer", None)
-        use_evolved_usage = (
-            optimizer_name == "bananas"
-            and p_name == "LLM_NB201_Predictor"
-            and usage_optimizer_cls is not None
-        )
         if optimizer_name == "rea":
             optimizer = RegularizedEvolution(config)
-        elif use_evolved_usage:
-            print(f"Using evolved usage strategy: {usage_optimizer_cls.__name__}")
-            optimizer = usage_optimizer_cls(
-                config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
-            )
-            instrument_usage_optimizer(optimizer)
         elif optimizer_name == "bananas":
-            # The evolved module supplies the complete surrogate-usage
-            # strategy behind this single optimizer boundary.
+            # Seed modules supply SurrogateUsageOptimizer (model.py / usage_* / coev seeds).
             optimizer = _model_module.SurrogateUsageOptimizer(
                 config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
             )
@@ -548,9 +534,7 @@ for i in range(NUM_TRIALS):
 
         
         # 3. INJECT CUSTOM PREDICTOR
-        if use_evolved_usage:
-            pass  # the evolved optimizer builds its own ensemble from predictor_cls
-        elif predictor_cls is not None:
+        if predictor_cls is not None:
             print(f"Injecting Custom Predictor: {p_name}")
             
             if optimizer_name == "bananas":
@@ -727,7 +711,7 @@ if not RUN_BASELINES or RUN_ALL:
         final_kendall_tau = 0.0
         final_mse = float('inf')
 
-    # Precision@top-10% on the final retrain's held-out test set (primary fitness with τ).
+    # Precision@top-10% diagnostic (archive solo fitness when LLMGE_FITNESS_MODE=precision).
     pred_csvs = sorted(_glob.glob(f"{config.out_dir}/**/analysis/predictions_*.csv", recursive=True))
     final_precision_top10 = (
         precision_at_top_from_predictions_csv(pred_csvs[-1]) if pred_csvs else None
@@ -736,8 +720,10 @@ if not RUN_BASELINES or RUN_ALL:
         print("Warning: no predictions CSV for Precision@top-10% — defaulting to 0.0.")
         final_precision_top10 = 0.0
 
-    # Write LLM-GE results file: tau, precision_top10, mse
-    # Evolution fitness uses (tau, precision); mse is logged for tie-breaking / analysis.
+    # Write LLM-GE results file.
+    # Coevolution: tau,best_accuracy (primary team fitness).
+    # Solo: tau,precision_top10,mse — run_improved picks (tau,mse) by default or
+    # (tau,precision) when LLMGE_FITNESS_MODE=precision (archive only).
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
@@ -746,7 +732,6 @@ if not RUN_BASELINES or RUN_ALL:
             second_objective = search_results["best_accuracy"]
             _f.write(f"{final_kendall_tau},{second_objective}")
         else:
-            # Solo SURROGATE fitness: (kendall_tau, precision_top10); mse for tie-break/logs.
             _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
     print(f"Results written to {filename}")

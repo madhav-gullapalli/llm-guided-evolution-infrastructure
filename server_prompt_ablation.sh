@@ -53,6 +53,9 @@ export SERVER_HOSTNAME=$(hostname)
 export LLMGE_PORT=18632
 export LLMGE_HOSTNAME_FILE=hostname_prompt_ablation.log
 export LLMGE_EVOLUTION_MODE=SURROGATE
+export LLMGE_FITNESS_MODE=precision
+# Harder BANANAS search seed (match island_controller_prompt_ablation.sbatch).
+export LLMGE_SEARCH_SEED=1
 
 HOSTNAME_FILE="$(pwd)/hostname_prompt_ablation.log"
 

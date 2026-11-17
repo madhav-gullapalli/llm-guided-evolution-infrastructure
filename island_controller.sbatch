@@ -14,7 +14,7 @@ COUNT=$1
 PREV_SERVER_JOB_ID=${2:-}
 
 cd $SLURM_SUBMIT_DIR
-echo "launching AIsurBL"
+echo "launching coevolution islands (MODE=BOTH, tau + best individual)"
 echo "Started on `/bin/hostname`"
 echo "$COUNT iterations remaining"
 
@@ -23,17 +23,18 @@ module load uv
 
 # LLM_Storage
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
-# Evolve the surrogate model seed (not usage_bananas); fitness = τ + Precision@10%
-export LLMGE_EVOLUTION_MODE=SURROGATE
+# Paired surrogate + usage coevolution (default). Fitness: (τ, best_acc@100).
+export LLMGE_EVOLUTION_MODE=BOTH
+unset LLMGE_FITNESS_MODE
 
 # Change to the repository root
 cd /storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure
 
-# Solo SURROGATE τ+Precision fitness (override LLMGE_EVOLUTION_MODE=BOTH for coev)
-uv run python islands_wrapper.py surrogate_precision_run \
-    --num_islands 3 \
+# MODE=3 → islands_wrapper.spawn_coevolution_islands → run_coevolution.py
+uv run python islands_wrapper.py surrogate_coevolution_run \
+    --num_islands 1 \
     --llms llama3 \
-    --prompt_groups "naslib/general,naslib/ranking,naslib/efficiency"
+    --prompt_groups "naslib/general"
 
 
 if (( COUNT > 1 )); then

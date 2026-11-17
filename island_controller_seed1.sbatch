@@ -13,7 +13,7 @@ COUNT=$1
 PREV_SERVER_JOB_ID=${2:-}
 
 cd $SLURM_SUBMIT_DIR
-echo "launching seed-1 precision islands"
+echo "launching ARCHIVE seed-1 precision islands (see tmp/PRECISION_ARCHIVE.md)"
 echo "Started on `/bin/hostname`"
 echo "$COUNT iterations remaining"
 
@@ -22,6 +22,7 @@ module load uv
 
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 export LLMGE_EVOLUTION_MODE=SURROGATE
+export LLMGE_FITNESS_MODE=precision
 export LLMGE_SEARCH_SEED=1
 export LLMGE_PORT=18633
 export LLMGE_HOSTNAME_FILE=hostname_seed1.log

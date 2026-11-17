@@ -33,8 +33,9 @@ OPTIMAL = {
     ("nasbench201", "ImageNet16-120"): 47.31,
 }
 
+# Chart-normalized defaults (cifar100 matches axis_limits.ACC_YLIM)
 YLIMS = {
-    ("nasbench201", "cifar100"): (62.0, 74.0),
+    ("nasbench201", "cifar100"): (65.0, 74.0),
     ("nasbench201", "cifar10"): (84.0, 92.0),
     ("nasbench201", "ImageNet16-120"): (44.0, 48.0),
 }

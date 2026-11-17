@@ -39,6 +39,8 @@ islands_bash_script: '#!/bin/bash
 
     export LLMGE_SEARCH_SEED="${{LLMGE_SEARCH_SEED:-242}}"
 
+    export LLMGE_FITNESS_MODE="${{LLMGE_FITNESS_MODE:-precision}}"
+
 
     # Run Python script
 

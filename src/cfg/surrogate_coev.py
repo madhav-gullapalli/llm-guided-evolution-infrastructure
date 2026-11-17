@@ -2,6 +2,11 @@
 
 Compatible with the repository's constants.py symlink convention. Jobs, LLM
 runtime, objectives, evaluator budgets and era settings are inherited unchanged.
+
+Usage seed alternatives (meeting note: search algorithms besides BANANAS):
+  - coev_usage.py         — BANANAS acquisition (default)
+  - coev_usage_random.py  — random top-k selection (set seed_file below)
+Solo USE mode: export LLMGE_USAGE_SEED=bananas|random → usage_{seed}.py
 """
 from src.cfg.constants_surrogate import *
 
