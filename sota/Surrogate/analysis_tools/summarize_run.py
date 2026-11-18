@@ -277,13 +277,17 @@ def coevolution_rows(run_dir: Path, args) -> Optional[list[dict]]:
             gene = match["match_id"]
             out_dir = find_output_dir(args.run_root, gene, args.dataset, args.seed)
             success = match["success"]
-            tau = match["objectives"][0] if success else None
-            # The result text's second objective is accuracy, not MSE.
+            # Objective order depends on the experiment configuration. Read named
+            # metrics instead of treating the first objective (often accuracy) as tau.
+            tau = None
             mse = None
             if out_dir is not None:
                 files = sorted(out_dir.glob("surrogate_metrics_*.json"))
                 if files:
-                    values = json.loads(files[-1].read_text()).get("mse", [])
+                    metrics = json.loads(files[-1].read_text())
+                    taus = metrics.get("kendall_tau", [])
+                    tau = taus[-1] if success and taus else None
+                    values = metrics.get("mse", [])
                     mse = values[-1] if values else None
             rows.append({
                 "gene": gene, "generation": report["generation"],

@@ -21,7 +21,7 @@ def architecture_split(train_size=TRAIN_SIZE, test_size=TEST_SIZE, seed=SAMPLE_S
 
 def evaluate_surrogate(predictor_factory, architecture_factory, accuracy_query,
                        train_size=TRAIN_SIZE, test_size=TEST_SIZE, seed=SAMPLE_SEED,
-                       ensemble_size=3):
+                       ensemble_size=3, top_percent=None, require_tau=True):
     """Fit fresh predictors on random training data, then score untouched data.
 
     Factories keep benchmark loading and evolved predictor code outside the
@@ -44,8 +44,13 @@ def evaluate_surrogate(predictor_factory, architecture_factory, accuracy_query,
         predictions.append(prediction)
     mean = np.mean(predictions, axis=0)
     tau = float(kendalltau(ytest, mean).statistic)
+    if top_percent is not None:
+        from src.experiment_metrics import top_tau
+        tau = top_tau(ytest, mean, top_percent)
     if not np.isfinite(tau):
-        raise ValueError("Undefined held-out Kendall tau")
+        if require_tau:
+            raise ValueError("Undefined held-out Kendall tau")
+        tau = 0.0
     return {"kendall_tau": tau, "mse": float(np.mean((ytest - mean) ** 2)),
             "train_size": train_size, "test_size": test_size, "seed": seed,
             "ensemble_size": ensemble_size,

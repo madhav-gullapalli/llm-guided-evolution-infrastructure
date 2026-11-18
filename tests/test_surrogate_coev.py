@@ -29,16 +29,16 @@ def test_metadata_inherits_existing_constants():
 def test_existing_controller_dispatches_population_metadata(monkeypatch):
     tree = ast.parse((REPO / "islands_wrapper.py").read_text())
     guard = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
-                 and ast.unparse(node.test) == "globals().get('MODE') in (3, 4)")
+                 and ast.unparse(node.test) == "'SEPARATE_POPULATIONS' in globals()")
     calls = []
-    namespace = {"MODE": 3, "args": SimpleNamespace(checkpoints="existing_run"),
+    namespace = {"SEPARATE_POPULATIONS": True, "args": SimpleNamespace(checkpoints="existing_run"),
                  "spawn_coevolution_islands": calls.append}
     with pytest.raises(SystemExit) as result:
         exec(compile(ast.Module(body=[guard], type_ignores=[]), "islands_wrapper.py", "exec"), namespace)
     assert result.value.code == 0
     assert calls == ["existing_run"]
     calls.clear()
-    namespace["MODE"] = 2
+    namespace.pop("SEPARATE_POPULATIONS")
     exec(compile(ast.Module(body=[guard], type_ignores=[]), "islands_wrapper.py", "exec"), namespace)
     assert not calls
 
@@ -124,6 +124,7 @@ def evaluator_policy(coevolution):
     banana = SimpleNamespace(new_epoch="original", _get_best_candidates="original")
     namespace = {
         "_coevolution": profile if coevolution else None,
+        "use_evolved_usage": False,
         "optimizer_name": "bananas", "_model_module": SimpleNamespace(SurrogateUsageOptimizer=Usage),
         "config": object(), "predictor_cls": None, "predictor_kwargs": {},
         "debug_new_epoch": lambda self, epoch: calls.append("debug"),
@@ -208,11 +209,8 @@ from src.cfg import constants, constants_surrogate
 import run_improved
 for name in ['SEED_NETWORK', 'DNA_TXT', 'LLM_LLAMA3', 'FITNESS_WEIGHTS', 'ISLANDS_BASH_SCRIPT_TEMPLATE']:
     assert hasattr(constants, name), name
-for mode, seed in [('SURROGATE', 'model.py'), ('USE', 'usage_bananas.py'), ('BOTH', 'model.py'), ('BOTH_DISTINCT', 'model.py'), ('4', 'model.py')]:
-    os.environ['LLMGE_EVOLUTION_MODE'] = mode
-    importlib.reload(constants_surrogate)
-    importlib.reload(constants)
-    assert constants.SEED_NETWORK.endswith('/' + seed)
+for separate, surrogate, usage in [(True, True, False), (True, False, True), (True, True, True), (False, False, False)]:
+    assert isinstance(constants.SEPARATE_POPULATIONS, bool)
     assert constants.SEED_NETWORK == constants_surrogate.SEED_NETWORK
     assert constants.VARIANT_DIR.endswith('/models/llmge_models')
     assert constants.HOSTNAME_DIR == constants_surrogate.HOSTNAME_DIR
@@ -224,29 +222,14 @@ for mode, seed in [('SURROGATE', 'model.py'), ('USE', 'usage_bananas.py'), ('BOT
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("mode", [1, 2, 3, 4])
-def test_numeric_mode_selects_coevolution_only_for_both(monkeypatch, mode):
-    monkeypatch.delenv("LLMGE_EVOLUTION_MODE", raising=False)
-    path = REPO / "src/cfg/constants_surrogate.py"
-    source = path.read_text().replace("MODE = 3", f"MODE = {mode}", 1)
-    namespace = {"__file__": str(path), "__name__": "mode_test"}
-    exec(compile(source, str(path), "exec"), namespace)
-    assert namespace["MODE"] == mode
-    assert int(namespace["evolution_mode"]) == mode
-    if mode == 1:
-        assert namespace["SEED_NETWORK"].endswith("/model.py")
-    elif mode == 2:
-        assert namespace["SEED_NETWORK"].endswith("/usage_bananas.py")
+@pytest.mark.parametrize("separate", [True, False])
+def test_boolean_population_configuration_routes_to_shared_runner(separate):
     calls = []
-    namespace.update(args=SimpleNamespace(checkpoints="mode_run"), spawn_coevolution_islands=calls.append)
+    namespace = {"SEPARATE_POPULATIONS": separate, "args": SimpleNamespace(checkpoints="run"),
+                 "spawn_coevolution_islands": calls.append}
     tree = ast.parse((REPO / "islands_wrapper.py").read_text())
     guard = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
-                 and ast.unparse(node.test) == "globals().get('MODE') in (3, 4)")
-    code = compile(ast.Module(body=[guard], type_ignores=[]), "islands_wrapper.py", "exec")
-    if mode in (3, 4):
-        with pytest.raises(SystemExit):
-            exec(code, namespace)
-        assert calls == ["mode_run"]
-    else:
-        exec(code, namespace)
-        assert not calls
+                 and ast.unparse(node.test) == "'SEPARATE_POPULATIONS' in globals()")
+    with pytest.raises(SystemExit):
+        exec(compile(ast.Module(body=[guard], type_ignores=[]), "islands_wrapper.py", "exec"), namespace)
+    assert calls == ["run"]

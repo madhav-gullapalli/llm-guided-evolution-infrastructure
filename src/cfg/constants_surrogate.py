@@ -3,40 +3,48 @@ import numpy as np
 import torch
 import platform
 import yaml
-from enum import IntEnum
+# True: evolve surrogate and usage in separate populations.
+# False: evolve one population of joint surrogate/usage genomes; only paired
+# metrics apply, and the two component evolution flags below are ignored.
+SEPARATE_POPULATIONS = False
 
+# In separate populations, False freezes that component at its configured seed.
+# Every candidate in the evolving population pairs with that unchanged seed;
+SURROGATE_EVOL = True
+USAGE_EVOL = True
 
-class EvolutionMode(IntEnum):
-    """Which explicit LLMGE artifact is allowed to evolve."""
+# Independent surrogate objectives. Uncomment metrics to include them in selection.
+# Samples are disjoint; train_size/test_size default to 100/1000.
+# Use {} to skip independent surrogate evaluation entirely.
+SURROGATE_METRICS = {
+    "ktau": {"train_size": 100, "test_size": 1000},  # Maximize Kendall tau.
+    # "ktau_top_X_percent": {"train_size": 100, "test_size": 1000, "X": 10},
+    # "mse": {"train_size": 100, "test_size": 1000},  
+}
+# Top-percent tau measures ranking among the top X% by true accuracy (maximize).
 
-    SURROGATE = 1
-    USE = 2
-    BOTH = 3  # Paired surrogate/usage coevolution.
-    BOTH_DISTINCT = 4  # Mixed coevolution metrics with distinct metrics
+# Independent usage objectives, measured with a perfect surrogate.
+# Use {} to skip independent usage evaluation entirely.
+USAGE_METRICS = {
+    "surrogate_usage": {}, 
+}
 
-
-# 1: solo surrogate; 2: solo usage; 3/4: paired coevolution.
-MODE = 4
-# The existing environment override accepts names or numbers.
-_evolution_mode_value = os.getenv("LLMGE_EVOLUTION_MODE", str(MODE)).upper()
-evolution_mode = EvolutionMode[
-    _evolution_mode_value if not _evolution_mode_value.isdigit()
-    else EvolutionMode(int(_evolution_mode_value)).name
-]
-MODE = int(evolution_mode)
+# Paired evaluation always runs and affects BOTH evolving components.
+# Keep at least one metric enabled; {} uses that metric's default arguments.
+PAIRED_METRICS = {
+    "best_individual_found": {},  
+    "ktau": {},  
+    # "ktau_top_X_percent": {"X": 10},  
+    # "time_to_find_top_X_percent": {"X": 1},  
+}
+# Time includes initialization; missing the target scores search budget + 1.
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOTA_ROOT = os.path.join(ROOT_DIR, 'sota/Surrogate')
 # Both seed programs contain a concrete surrogate and a concrete usage
 # strategy.  Only their # --OPTION-- placement differs, so the unchanged
 # LLMGE block mutation pipeline selects the intended component.
-_seed_by_mode = {
-    EvolutionMode.SURROGATE: 'model.py',
-    EvolutionMode.USE: f"usage_{os.getenv('LLMGE_USAGE_SEED', 'bananas')}.py",
-    EvolutionMode.BOTH: 'model.py',  # Import-compatible default; workers use their own seeds
-    EvolutionMode.BOTH_DISTINCT: 'model.py',
-}
-SEED_NETWORK = os.path.join(SOTA_ROOT, _seed_by_mode[evolution_mode])
+SEED_NETWORK = os.path.join(SOTA_ROOT, 'model.py')
 MODEL = "model"
 DATA_PATH = SOTA_ROOT
 # Path to local LLM model path used by server.py for LLM operations

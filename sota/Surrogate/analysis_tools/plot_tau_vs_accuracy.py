@@ -90,6 +90,7 @@ def main() -> None:
         ax.text(0.03, 0.97, correlation_text(tau, acc), transform=ax.transAxes, va="top", fontsize=9,
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.85))
         ax.set_xlabel("Surrogate Kendall τ (gene fitness)")
+        ax.set_xlim(0, 1)
         ax.set_ylabel(ylabel)
         ax.grid(True, linestyle="--", alpha=0.5)
 

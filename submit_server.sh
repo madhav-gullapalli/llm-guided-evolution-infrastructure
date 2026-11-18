@@ -1,4 +1,4 @@
-#!/bin/bash
+git add #!/bin/bash
 # Submit held so scheduler-side exclusion can be checked before allocation.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"

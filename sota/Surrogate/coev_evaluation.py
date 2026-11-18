@@ -20,6 +20,8 @@ def observe_usage_optimizer(optimizer):
             result = fit(*fit_args, **fit_kwargs)
             predictions = np.asarray(ensemble.query(self.test_data))
             mean_predictions = np.mean(predictions, axis=0)
+            self.paired_targets = list(self.test_accuracies)
+            self.paired_predictions = list(mean_predictions)
             tau, _ = kendalltau(self.test_accuracies, mean_predictions)
             mse = np.mean((np.array(self.test_accuracies) - mean_predictions) ** 2)
             self.surrogate_test_metrics.append(tau)

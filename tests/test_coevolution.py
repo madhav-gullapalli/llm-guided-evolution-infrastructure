@@ -133,6 +133,12 @@ def test_existing_seed_composition(tmp_path, monkeypatch):
 def local_jobs(monkeypatch, tmp_path):
     import run_coevolution as coev
     legacy = coev.legacy
+    monkeypatch.setattr(coev.config, "SEPARATE_POPULATIONS", True)
+    monkeypatch.setattr(coev.config, "SURROGATE_EVOL", True)
+    monkeypatch.setattr(coev.config, "USAGE_EVOL", True)
+    monkeypatch.setattr(coev.config, "SURROGATE_METRICS", {})
+    monkeypatch.setattr(coev.config, "USAGE_METRICS", {})
+    monkeypatch.setattr(coev.config, "PAIRED_METRICS", {"ktau": {}, "best_individual_found": {}})
     # Keep acceptance tests independent of edits to the live experiment metadata.
     settings = copy.deepcopy(coev.config.POPULATIONS)
     for population in settings.values():
@@ -186,7 +192,8 @@ def local_jobs(monkeypatch, tmp_path):
         assert module_name.startswith("model_coev_")
         module = import_file(variants / f"{module_name}.py")
         assert module.get_surrogate_config.__module__.endswith("_source_0")
-        assert module.SurrogateUsageOptimizer.__module__.endswith("_source_1")
+        assert module.SurrogateUsageOptimizer.__module__.endswith(
+            "_source_1" if coev.config.SEPARATE_POPULATIONS else "_source_0")
         evaluation_calls.append(module_name)
         assert "--coevolution" in args
         (results / f"{module_name.removeprefix('model_')}_results.txt").write_text("0.9,1.0")
@@ -531,6 +538,12 @@ def test_resume_allows_only_lowering_elite_minimum(local_jobs, monkeypatch):
 def test_component_prompts_include_contract_and_fixed_header(local_jobs, monkeypatch, component, group, required):
     coev, _, _ = local_jobs
     legacy = coev.legacy
+    monkeypatch.setattr(coev.config, "SEPARATE_POPULATIONS", True)
+    monkeypatch.setattr(coev.config, "SURROGATE_EVOL", True)
+    monkeypatch.setattr(coev.config, "USAGE_EVOL", True)
+    monkeypatch.setattr(coev.config, "SURROGATE_METRICS", {})
+    monkeypatch.setattr(coev.config, "USAGE_METRICS", {})
+    monkeypatch.setattr(coev.config, "PAIRED_METRICS", {"ktau": {}, "best_individual_found": {}})
     seed = REPO / f'sota/Surrogate/coev_{component}.py'
     monkeypatch.setattr(legacy, 'SEED_NETWORK', str(seed))
     monkeypatch.setattr(legacy, 'PROMPT_GLOB', f'templates/naslib/{group}/*.txt')
@@ -549,7 +562,9 @@ def test_component_prompts_include_contract_and_fixed_header(local_jobs, monkeyp
 
 def test_distinct_smoke_selection_checkpoint_and_resume(local_jobs, tmp_path, monkeypatch):
     coev, _, evaluation_calls = local_jobs
-    monkeypatch.setattr(coev.config, "MODE", 4)
+    monkeypatch.setattr(coev.config, "SURROGATE_METRICS", {"ktau": {}})
+    monkeypatch.setattr(coev.config, "USAGE_METRICS", {"surrogate_usage": {}})
+    monkeypatch.setattr(coev.config, "PAIRED_METRICS", {"best_individual_found": {}})
     settings = copy.deepcopy(coev.config.POPULATIONS)
     for cfg in settings.values():
         cfg.update(start_population_size=3, population_size=3, num_elites=2,
@@ -562,7 +577,7 @@ def test_distinct_smoke_selection_checkpoint_and_resume(local_jobs, tmp_path, mo
     checkpoint, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
     metrics = checkpoint["workers"]["surrogate"]["individual_metrics"]
     assert len(metrics) == 3
-    assert all(score["kendall_tau"] == 0.75 for score in metrics.values())
+    assert all(score["ktau"] == 0.75 for score in metrics.values())
     assert len([name for name in evaluation_calls if name.startswith("model_surrogate_individual_")]) == 3
     assert len([name for name in evaluation_calls if name.startswith("model_usage_individual_")]) == 3
     assert len([name for name in evaluation_calls if name.startswith("model_coev_")]) == 9
@@ -572,12 +587,66 @@ def test_distinct_smoke_selection_checkpoint_and_resume(local_jobs, tmp_path, mo
     usage_metrics = checkpoint["workers"]["usage"]["individual_metrics"]
     assert len(usage_metrics) == 3
     assert report["usage_individual_metrics"] == usage_metrics
-    assert set(map(tuple, report["candidate_objectives"]["surrogate"].values())) == {(0.75, 1.0)}
-    assert set(map(tuple, report["candidate_objectives"]["usage"].values())) == {(1.0, 100)}
-    assert all(m["real_evaluations"] == 100 for m in usage_metrics.values())
-    assert all(match["objectives"] == [0.9, 1.0] for match in report["matches"])
+    assert set(map(tuple, report["candidate_objectives"]["surrogate"].values())) == {(0.9, 0.75)}
+    assert set(map(tuple, report["candidate_objectives"]["usage"].values())) == {(0.9, 900)}
+    assert all(m["surrogate_usage"] == 900 for m in usage_metrics.values())
+    assert all(match["objectives"] == [0.9] for match in report["matches"])
     coev.run(root)
     assert (root / "checkpoint_gen_2.pkl").exists()
     # Unchanged surviving source IDs reuse their independent score after resume.
     assert len([name for name in evaluation_calls if name.startswith("model_surrogate_individual_")]) == 3
     assert len([name for name in evaluation_calls if name.startswith("model_usage_individual_")]) == 3
+
+@pytest.mark.parametrize('surrogate,usage', [(True, False), (False, True)])
+def test_configured_single_population(local_jobs, tmp_path, monkeypatch, surrogate, usage):
+    coev, llm_calls, evaluations = local_jobs
+    settings = copy.deepcopy(coev.config.POPULATIONS)
+    for cfg in settings.values():
+        cfg.update(start_population_size=3, population_size=3, num_elites=2,
+                   crossover_probability=0., mutation_probability=0.)
+    monkeypatch.setattr(coev.config, 'POPULATIONS', settings)
+    monkeypatch.setattr(coev.config, 'SURROGATE_EVOL', surrogate)
+    monkeypatch.setattr(coev.config, 'USAGE_EVOL', usage)
+    monkeypatch.setattr(coev.config, 'kappa', 2)
+    monkeypatch.setattr(coev.config, 'matches', 1)
+    def reject_coverage(*args, **kwargs):
+        pytest.fail('Frozen partners must bypass the coverage scheduler')
+    monkeypatch.setattr(coev, 'random_uniform_coverage', reject_coverage)
+    monkeypatch.setattr(coev.legacy, 'migration_gen', 1)
+    root = tmp_path / 'solo'
+    coev.run(root)
+    checkpoint, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
+    frozen = 'usage' if surrogate else 'surrogate'
+    assert len(checkpoint['workers'][frozen]['population']) == 1
+    assert checkpoint['workers'][frozen]['parents'] == []
+    assert len(llm_calls) == 3
+    assert len(evaluations) == 3
+    import json
+    report = json.loads(Path(checkpoint['history']).read_text())
+    assert {record['source_ids'][frozen] for record in report['matches']} == {'fixed_' + frozen}
+    assert Path(checkpoint['workers'][frozen]['state']['VARIANT_DIR'],
+                'model_fixed_' + frozen + '.py').read_bytes() == Path(
+                    coev.legacy.ROOT_DIR, settings[frozen]['seed_file']).read_bytes()
+    coev.run(root)
+    resumed, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
+    report = json.loads(Path(resumed['history']).read_text())
+    assert {record['source_ids'][frozen] for record in report['matches']} == {'fixed_' + frozen}
+    assert len(llm_calls) == 3
+
+
+def test_configured_joint_population(local_jobs, tmp_path, monkeypatch):
+    coev, llm_calls, evaluations = local_jobs
+    monkeypatch.setattr(coev.config, 'SEPARATE_POPULATIONS', False)
+    settings = {**coev.config.PAIRED_POPULATION, 'start_population_size': 3,
+                'population_size': 3, 'num_elites': 2}
+    monkeypatch.setattr(coev.config, 'PAIRED_POPULATION', settings)
+    monkeypatch.setattr(coev.legacy, 'migration_gen', 1)
+    root = tmp_path / 'joint'
+    coev.run(root)
+    coev.run(root)
+    checkpoint, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
+    assert set(checkpoint['workers']) == {'paired'}
+    assert len(checkpoint['workers']['paired']['elites']) == 2
+    assert len(evaluations) >= 6
+    assert all('joint_seed.py' in call['input_filename_x'] or '/paired/' in call['input_filename_x']
+               for call in llm_calls)

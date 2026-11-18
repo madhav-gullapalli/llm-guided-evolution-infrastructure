@@ -63,3 +63,6 @@ Read the white-paper below:
   </a>
 </p>
 <br>
+
+For surrogate experiment selection, see [experiment configuration](docs/experiment_configuration.md)
+for independent evolution flags, metric dictionaries, and joint genomes.

@@ -23,6 +23,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -45,7 +46,7 @@ def main() -> None:
     if not summary.exists():
         raise SystemExit(f"{summary} not found; run summarize_run.py --run {args.run} first")
     with open(summary, newline="") as f:
-        rows = [r for r in csv.DictReader(f) if r["status"] == "ok" and r.get("top10_tau") and r["generation"]]
+        rows = [r for r in csv.DictReader(f) if r["status"] == "ok" and r.get("kendall_tau") and r.get("top10_tau") and r["generation"]]
     if not rows:
         raise SystemExit(f"No genes with top10_tau in {summary}; re-run summarize_run.py to add the column")
 
@@ -71,10 +72,12 @@ def main() -> None:
     paired = any(r.get("mode") == "COEVOLUTION" for r in rows)
     ax.set_xlabel("Coevolution generation (evaluated pairs)" if paired else
                   "LLM-GE generation (genes created in that generation)")
-    ax.set_ylabel("Kendall τ on held-out test architectures")
+    ax.set_ylabel("Kendall τ (decimal)")
+    ax.set_ylim(0, 1)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(fontsize=8, loc="center left", bbox_to_anchor=(1.01, 0.5))
-    ax.set_title(f"Surrogate ranking quality by generation — {run_dir.name}")
+    ax.set_title(f"Kendall τ and top-10% τ by generation — {run_dir.name}")
     fig.tight_layout()
 
     output = args.output or run_dir / "analysis" / "tau_trend.png"

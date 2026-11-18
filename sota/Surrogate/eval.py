@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.cfg.constants_surrogate import (
     MODEL as DEFAULT_MODEL_MODULE,
-    MODE, EvolutionMode,
+    PAIRED_METRICS,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
     SURROGATE_RESULTS_DIR,
@@ -48,14 +48,13 @@ parser.add_argument('--debug', action='store_true', help='stores trajectory_log 
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
-parser.add_argument("--usage_individual", action="store_true", help="Mode 4: evaluate usage with a perfect surrogate")
+parser.add_argument("--metric-options", default="{}")
+parser.add_argument("--usage_individual", action="store_true", help="Evaluate usage with a perfect surrogate")
 parser.add_argument("--surrogate_individual", action="store_true", help="Evaluate a surrogate without a usage optimizer")
 parser.add_argument("--coevolution", action="store_true", help="Keep the paired usage optimizer policy")
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
-if custom_args.usage_individual and MODE != EvolutionMode.BOTH_DISTINCT:
-    parser.error("--usage_individual requires BOTH_DISTINCT (mode 4)")
 _coevolution = custom_args.coevolution or custom_args.usage_individual
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -327,6 +326,8 @@ def log_surrogate_test_metrics(self, epoch):
     
     # Calculate Kendall Tau (Ranking Correlation)
     tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
+    self.paired_targets = list(self.test_accuracies)
+    self.paired_predictions = list(mean_pred_scores)
     
     # Calculate MSE (Mean Squared Error)
     mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
@@ -530,6 +531,7 @@ if args.surrogate_individual:
         lambda: LLM_NB201_Predictor(**predictor_kwargs),
         independent_architecture,
         lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
+        **json.loads(args.metric_options),
     )
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
@@ -614,6 +616,8 @@ for i in range(NUM_TRIALS):
         trainer = Trainer(optimizer, config, lightweight_output=True)
         trainer.search() 
         if _coevolution and p_name == "LLM_NB201_Predictor":
+            search_results["optimizer"] = optimizer
+            search_results["trajectory"] = list(trainer.search_trajectory.valid_acc)
             search_results["best_accuracy"] = best_search_accuracy(
                 trainer.search_trajectory.valid_acc)
 
@@ -779,7 +783,13 @@ if not RUN_BASELINES or RUN_ALL:
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
         second_objective = search_results["best_accuracy"] if _coevolution else final_mse
-        _f.write(f"{final_kendall_tau},{second_objective}")
+        if _coevolution:
+            from src.experiment_metrics import paired_values
+            values = paired_values(PAIRED_METRICS, final_kendall_tau,
+                                   search_results, search_results["optimizer"], dataset_api, config.dataset)
+            _f.write(",".join(map(str, values)))
+        else:
+            _f.write(f"{final_kendall_tau},{second_objective}")
 
     print(f"Results written to {filename}")
     print(f"  Kendall Tau: {final_kendall_tau:.4f}")

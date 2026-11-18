@@ -87,7 +87,8 @@ def test_missing_individual_score_does_not_invalidate_usage_pair():
 
 def test_individual_job_cache_and_checkpoint_configuration(tmp_path, monkeypatch):
     import run_coevolution as coev
-    monkeypatch.setattr(coev.config, 'MODE', 4)
+    monkeypatch.setattr(coev.config, 'SURROGATE_EVOL', True)
+    monkeypatch.setattr(coev.config, 'SURROGATE_METRICS', {'ktau': {'test_size': 1000}})
     worker = coev.PopulationWorker('surrogate', coev.config.POPULATIONS['surrogate'], tmp_path)
     worker.source('s0').write_text('def get_surrogate_config(**kwargs): return kwargs\n')
     worker.population = [coev.legacy.creator.Individual(['s0'])]
@@ -104,16 +105,16 @@ def test_individual_job_cache_and_checkpoint_configuration(tmp_path, monkeypatch
     monkeypatch.setattr(coev, 'save_intermediate', lambda *args: None)
     workers = {'surrogate': worker}
     coev.evaluate_individuals(workers, 1, 1, tmp_path)
-    assert worker.individual_metrics['s0']['kendall_tau'] == 0.75
+    assert worker.individual_metrics['s0']['ktau'] == 0.75
     saved = worker.snapshot()
     worker.individual_metrics = {}
     worker.restore(saved)
     coev.evaluate_individuals(workers, 2, 1, tmp_path)
     assert len(submissions) == 1
     distinct = copy.deepcopy(coev.configuration_snapshot())
-    assert distinct['individual_evaluation']['test_size'] == 1000
-    monkeypatch.setattr(coev.config, 'MODE', 3)
-    assert 'individual_evaluation' not in coev.configuration_snapshot()
+    assert distinct['experiment']['SURROGATE_METRICS']['ktau']['test_size'] == 1000
+    monkeypatch.setattr(coev.config, 'SURROGATE_METRICS', {})
+    assert coev.configuration_snapshot()['experiment']['SURROGATE_METRICS'] == {}
     assert not coev.configuration_compatible(distinct)
 
 
@@ -157,3 +158,33 @@ def test_pair_aggregation_preserves_scores_with_earlier_partners():
                                  {'s0': {'kendall_tau': 0.5}},
                                  {'u0': {'real_evaluations': 10}})
     assert values == {'surrogate': {'s0': (0.5, 95)}, 'usage': {'u0': (90, 10)}}
+
+
+def test_metric_arguments_and_multiple_scores_reuse_job_path(tmp_path, monkeypatch):
+    import json
+    import shlex
+    import run_coevolution as coev
+    monkeypatch.setattr(coev.config, 'SURROGATE_EVOL', True)
+    monkeypatch.setattr(coev.config, 'SURROGATE_METRICS', {
+        'ktau_top_X_percent': {'train_size': 12, 'test_size': 30, 'X': 20},
+        'mse': {'train_size': 15, 'test_size': 25},
+    })
+    worker = coev.PopulationWorker('surrogate', coev.config.POPULATIONS['surrogate'], tmp_path)
+    worker.source('s0').write_text('def get_surrogate_config(**kwargs): return kwargs\n')
+    worker.population = [coev.legacy.creator.Individual(['s0'])]
+    seen = []
+    def evaluate(individuals):
+        line = coev.legacy.EVAL_RUNLINE.format('eval.py', 'model_x', VARIANT_DIR='variants')
+        args = shlex.split(line)
+        seen.append(json.loads(args[args.index('--metric-options') + 1]))
+        for individual in individuals:
+            individual.fitness.values = (.75, .01)
+    monkeypatch.setattr(coev.legacy, 'check_and_update_fitness', evaluate)
+    monkeypatch.setattr(coev, 'save_intermediate', lambda *args: None)
+    coev.evaluate_individuals({'surrogate': worker}, 1, 1, tmp_path)
+    assert seen == [dict(train_size=12, test_size=30, top_percent=20, require_tau=True),
+                    dict(train_size=15, test_size=25, require_tau=False)]
+    assert worker.individual_metrics['s0']['ktau_top_X_percent'] == .75
+    assert worker.individual_metrics['s0']['mse'] == .01
+    coev.evaluate_individuals({'surrogate': worker}, 2, 1, tmp_path)
+    assert len(seen) == 2
