@@ -6,12 +6,19 @@
 #SBATCH -C "H200|H100"
 #SBATCH --mem 160G
 #SBATCH -c 16
-#SBATCH --exclude=atl1-1-03-014-16-0
+#SBATCH --exclude=atl1-1-03-014-16-0,atl1-1-03-011-13-0
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
-echo "launching LLM Server"
+echo "launching LLM Server (coevolution / MODE=BOTH)"
 
 # Optional chained submission count to work around walltime limits
 COUNT=${1:-1}
+EXTRA_FILE=/storage/ice1/1/9/schen981/llm-guided-evolution-infrastructure/extra_segments.txt
+if [[ -f "$EXTRA_FILE" ]]; then
+    EXTRA=$(cat "$EXTRA_FILE")
+    rm -f "$EXTRA_FILE"
+    COUNT=$((COUNT + EXTRA))
+    echo "Added $EXTRA extra segments from $EXTRA_FILE (count now $COUNT)"
+fi
 
 hostname
 
@@ -45,13 +52,15 @@ PY
 
 export SERVER_HOSTNAME=$(hostname)
 # Jobs submitted below inherit this; src/cfg/constants.py reads it as PORT.
-export LLMGE_PORT=12676
+export LLMGE_PORT=18631
+export LLMGE_EVOLUTION_MODE=BOTH
+unset LLMGE_FITNESS_MODE
 
 HOSTNAME_FILE=$(pwd)"/hostname.log"
 
 echo "Writing server hostname '$SERVER_HOSTNAME' to file: $HOSTNAME_FILE"
 echo "$SERVER_HOSTNAME" > "$HOSTNAME_FILE"
-echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT)"
+echo "Starting LLM server on host: $SERVER_HOSTNAME (count=$COUNT, mode=BOTH)"
 
 # Submit the paired island-controller job from here so the two stay in sync
 echo "Submitting island controller (count=$COUNT)"

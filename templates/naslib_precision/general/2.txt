@@ -1,0 +1,8 @@
+Modify this NASLib surrogate code to improve downstream search performance under fitness (Kendall Tau, Precision@top-10%). Weak top-of-list rankings waste evaluation budget even when average correlation looks acceptable.
+
+Focus on changes that help the surrogate both order architectures globally and place true high-performers in its predicted top 10%. Prefer robust improvements over flashy but brittle edits.
+
+The current code block:
+```python
+{}
+```

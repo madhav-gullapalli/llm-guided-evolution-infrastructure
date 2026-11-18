@@ -291,9 +291,17 @@ def evaluate_matches(workers, pairings, generation, attempt, root):
     finally:
         # Preserve job IDs/statuses even if evaluation is interrupted or fails.
         save_intermediate(root, workers, generation, attempt, "evaluation", state)
-    return [PairRecord(ind[0], ids, ind.fitness.values,
-                       pair_fitness, invalid)
-            for ind, ids in zip(individuals, source_ids)]
+    records = []
+    for individual, ids in zip(individuals, source_ids):
+        info = state["GLOBAL_DATA"].get(individual[0], {})
+        values = individual.fitness.values
+        # Only completed jobs with finite objectives can count at the barrier.
+        if (info.get("status") != "completed"
+                or len(values) != len(pair_fitness.weights)
+                or not np.isfinite(values).all()):
+            values = invalid
+        records.append(PairRecord(individual[0], ids, values, pair_fitness, invalid))
+    return records
 
 
 def distinct_mode():
@@ -366,7 +374,8 @@ def run(checkpoints):
         raise ValueError("MVP requires exactly one surrogate and one usage worker")
     fields = {"seed_file", "start_population_size", "population_size", "num_elites",
               "crossover_probability", "mutation_probability", "llm_model", "prompt_group"}
-    if any(set(settings) != fields for settings in populations.values()):
+    if any(set(settings) != fields
+           for settings in [*config.POPULATIONS.values(), *populations.values()]):
         raise ValueError("Unsupported population settings; MVP has one worker per population")
     if any(owner not in config.POPULATIONS for owner in config.COMPOSITION_EXPORTS.values()):
         raise ValueError("Unknown population in composition exports")
@@ -508,6 +517,8 @@ def run(checkpoints):
 
 def configuration_compatible(saved):
     """Allow lowering elite/success minima without discarding existing work."""
+    if not saved:
+        return False
     saved = copy.deepcopy(saved)
     current = configuration_snapshot()
     for name, settings in current["populations"].items():

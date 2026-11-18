@@ -41,8 +41,14 @@ from summarize_run import (
 
 ORIGINAL_SEED = 242
 RERUN_DIR = SURROGATE_DIR / "models" / "seed_reruns"
-METRICS = ["kendall_tau", "top10_tau", "guided_best_acc", "guided_mean_acc", "evals_to_within_1pct_opt"]
-COLUMNS = ["gene", "seed", "status"] + METRICS + ["param_count_tau", "param_count_top10_tau", "output_dir"]
+METRICS = [
+    "kendall_tau", "top10_tau", "precision_top10",
+    "guided_best_acc", "guided_mean_acc", "evals_to_within_1pct_opt",
+]
+COLUMNS = (
+    ["gene", "seed", "status"] + METRICS
+    + ["param_count_tau", "param_count_top10_tau", "param_count_precision_top10", "output_dir"]
+)
 
 
 def resolve_run(run: Path) -> Path:
@@ -68,12 +74,19 @@ def pick_genes(summary: Path, top: int) -> list[str]:
     return picked
 
 
-def job_script(gene_id: str, seed: int) -> str:
+def job_script(gene_id: str, seed: int, num_init: int) -> str:
     with open(REPO_ROOT / "slurm-config" / "slurm_config.yaml") as f:
         template = yaml.safe_load(f)["python_bash_script"]
-    runline = (f"uv run python {SURROGATE_DIR / 'eval.py'} --model model_{gene_id} "
-               f"--variant_dir {RERUN_DIR} --seed {seed}")
-    return template.replace("--job-name=evaluateGene", "--job-name=seedRerun").replace("{}", runline, 1)
+    runline = (
+        f"uv run python {SURROGATE_DIR / 'eval.py'} --model model_{gene_id} "
+        f"--variant_dir {RERUN_DIR} --seed {seed} --num_init {num_init}"
+    )
+    script = template.replace("--job-name=evaluateGene", "--job-name=seedRerun").replace("{}", runline, 1)
+    # Gene evals must stay on H200: ice-bw Blackwell nodes fail with
+    # "CUDA error: no kernel image is available for execution on the device".
+    if "#SBATCH -C" not in script and "#SBATCH --constraint" not in script:
+        script = script.replace("#SBATCH --gres=gpu:1\n", "#SBATCH --gres=gpu:1\n#SBATCH -C \"H200\"\n", 1)
+    return script
 
 
 def submit(args: argparse.Namespace, run_dir: Path) -> None:
@@ -101,7 +114,7 @@ def submit(args: argparse.Namespace, run_dir: Path) -> None:
                     continue
                 shutil.copyfile(source, RERUN_DIR / f"model_{gene_id}.py")
                 script = jobs_dir / f"{gene_id}.sh"
-                script.write_text(job_script(gene_id, seed))
+                script.write_text(job_script(gene_id, seed, args.num_init))
                 if args.dry_run:
                     print(f"[dry-run] sbatch {script}")
                     continue
@@ -146,8 +159,13 @@ def collect(args: argparse.Namespace, run_dir: Path) -> None:
 
     rows = []
     for gene in genes:
-        rows.append(evaluation_row(gene, ORIGINAL_SEED, gene, args))
-        rows += [evaluation_row(gene, seed, rerun_id(gene, seed), args) for g, seed in pairs if g == gene]
+        gene_seeds = sorted({seed for g, seed in pairs if g == gene})
+        # Prefer a re-run of the original seed (e.g. gene__seed242) when present, so a new
+        # --num_init does not get mixed with the evolution's old evaluation.
+        if ORIGINAL_SEED not in gene_seeds:
+            rows.append(evaluation_row(gene, ORIGINAL_SEED, gene, args))
+        for seed in gene_seeds:
+            rows.append(evaluation_row(gene, seed, rerun_id(gene, seed), args))
 
     output = run_dir / "analysis" / "seed_reruns.csv"
     with open(output, "w", newline="") as f:
@@ -170,9 +188,14 @@ def collect(args: argparse.Namespace, run_dir: Path) -> None:
     baselines = {}
     for r in rows:
         if r["status"] == "ok" and r.get("param_count_tau") is not None:
-            baselines[r["seed"]] = (r["param_count_tau"], r["param_count_top10_tau"])
-    for seed, (tau, top) in sorted(baselines.items()):
-        print(f"parameter-count baseline, seed {seed}: tau={tau:.3f}  top10_tau={top:.3f}")
+            baselines[r["seed"]] = (
+                r["param_count_tau"],
+                r["param_count_top10_tau"],
+                r.get("param_count_precision_top10"),
+            )
+    for seed, (tau, top, prec) in sorted(baselines.items()):
+        prec_s = f"  precision_top10={prec:.3f}" if prec is not None else ""
+        print(f"parameter-count baseline, seed {seed}: tau={tau:.3f}  top10_tau={top:.3f}{prec_s}")
 
 
 def main() -> None:
@@ -182,6 +205,12 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=5, help="submit: number of top genes by tau (distinct scores)")
     parser.add_argument("--genes", nargs="*", default=None, help="submit: explicit gene ids instead of --top")
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2], help="submit: extra search seeds")
+    parser.add_argument(
+        "--num_init",
+        type=int,
+        default=20,
+        help="submit: random-start size for BANANAS (default 20, matching COLE; past runs used 50)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="submit: write job scripts without sbatch")
     parser.add_argument("--force", action="store_true", help="submit: re-run seeds that already have results")
     parser.add_argument("--results-dir", type=Path, default=SURROGATE_DIR / "results")

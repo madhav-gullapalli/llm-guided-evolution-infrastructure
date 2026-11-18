@@ -34,6 +34,7 @@ from src.coevolution import SEARCH_BUDGET, best_search_accuracy
 
 from trajectory_plots import surrogate_data_plots
 from analysis import (
+    precision_at_top_from_predictions_csv,
     records_from_candidate_log,
     records_from_test_set,
     write_prediction_analysis,
@@ -51,6 +52,12 @@ parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS s
 parser.add_argument("--metric-options", default="{}")
 parser.add_argument("--usage_individual", action="store_true", help="Evaluate usage with a perfect surrogate")
 parser.add_argument("--surrogate_individual", action="store_true", help="Evaluate a surrogate without a usage optimizer")
+parser.add_argument(
+    '--num_init',
+    type=int,
+    default=50,
+    help='Random-start architectures before the surrogate is trained (papers/NASLib use 10; COLE uses 20)',
+)
 parser.add_argument("--coevolution", action="store_true", help="Keep the paired usage optimizer policy")
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
@@ -119,7 +126,7 @@ config.optimizer = ""
 config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
-config.search.num_init = 15
+config.search.num_init = args.num_init
 config.search.k = 10
 config.search.epochs = SEARCH_BUDGET if _coevolution else args.epochs
 config.search.num_candidates = 100
@@ -560,24 +567,10 @@ for i in range(NUM_TRIALS):
         set_config_save()
 
         # 1. Select Optimizer
-        # USE-mode genes define SurrogateUsageOptimizer; SURROGATE-mode genes (model.py) do not.
-        usage_optimizer_cls = getattr(_model_module, "SurrogateUsageOptimizer", None)
-        use_evolved_usage = (
-            optimizer_name == "bananas"
-            and p_name == "LLM_NB201_Predictor"
-            and usage_optimizer_cls is not None
-        )
         if optimizer_name == "rea":
             optimizer = RegularizedEvolution(config)
-        elif use_evolved_usage:
-            print(f"Using evolved usage strategy: {usage_optimizer_cls.__name__}")
-            optimizer = usage_optimizer_cls(
-                config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
-            )
-            instrument_usage_optimizer(optimizer)
         elif optimizer_name == "bananas":
-            # The evolved module supplies the complete surrogate-usage
-            # strategy behind this single optimizer boundary.
+            # Seed modules supply SurrogateUsageOptimizer (model.py / usage_* / coev seeds).
             optimizer = _model_module.SurrogateUsageOptimizer(
                 config, predictor_cls=predictor_cls, predictor_kwargs=predictor_kwargs
             )
@@ -597,9 +590,7 @@ for i in range(NUM_TRIALS):
 
         
         # 3. INJECT CUSTOM PREDICTOR
-        if use_evolved_usage:
-            pass  # the evolved optimizer builds its own ensemble from predictor_cls
-        elif predictor_cls is not None:
+        if predictor_cls is not None:
             print(f"Injecting Custom Predictor: {p_name}")
             
             if optimizer_name == "bananas":
@@ -778,22 +769,35 @@ if not RUN_BASELINES or RUN_ALL:
         final_kendall_tau = 0.0
         final_mse = float('inf')
 
-    # Write LLM-GE results file
+    # Precision@top-10% diagnostic (archive solo fitness when LLMGE_FITNESS_MODE=precision).
+    pred_csvs = sorted(_glob.glob(f"{config.out_dir}/**/analysis/predictions_*.csv", recursive=True))
+    final_precision_top10 = (
+        precision_at_top_from_predictions_csv(pred_csvs[-1]) if pred_csvs else None
+    )
+    if final_precision_top10 is None:
+        print("Warning: no predictions CSV for Precision@top-10% — defaulting to 0.0.")
+        final_precision_top10 = 0.0
+
+    # Write LLM-GE results file.
+    # Coevolution: the configured paired metrics, in configuration order.
+    # Solo: tau,precision_top10,mse — run_improved picks (tau,mse) by default or
+    # (tau,precision) when LLMGE_FITNESS_MODE=precision (archive only).
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
-        second_objective = search_results["best_accuracy"] if _coevolution else final_mse
         if _coevolution:
             from src.experiment_metrics import paired_values
             values = paired_values(PAIRED_METRICS, final_kendall_tau,
                                    search_results, search_results["optimizer"], dataset_api, config.dataset)
             _f.write(",".join(map(str, values)))
         else:
-            _f.write(f"{final_kendall_tau},{second_objective}")
+            _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
     print(f"Results written to {filename}")
-    print(f"  Kendall Tau: {final_kendall_tau:.4f}")
-    print(f"  MSE:         {final_mse:.6f}")
+    print(f"  Kendall Tau:       {final_kendall_tau:.4f}")
     if _coevolution:
-        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {second_objective:.6f}")
+        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {search_results['best_accuracy']:.6f}")
+    else:
+        print(f"  Precision@top-10%: {final_precision_top10:.4f}")
+        print(f"  MSE:               {final_mse:.6f}")
     print('=' * 120); print('job done'); print('=' * 120)

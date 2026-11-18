@@ -19,23 +19,23 @@ USAGE_EVOL = True
 SURROGATE_METRICS = {
     "ktau": {"train_size": 100, "test_size": 1000},  # Maximize Kendall tau.
     # "ktau_top_X_percent": {"train_size": 100, "test_size": 1000, "X": 10},
-    # "mse": {"train_size": 100, "test_size": 1000},  
+    # "mse": {"train_size": 100, "test_size": 1000},
 }
 # Top-percent tau measures ranking among the top X% by true accuracy (maximize).
 
 # Independent usage objectives, measured with a perfect surrogate.
 # Use {} to skip independent usage evaluation entirely.
 USAGE_METRICS = {
-    "surrogate_usage": {}, 
+    "surrogate_usage": {},
 }
 
 # Paired evaluation always runs and affects BOTH evolving components.
 # Keep at least one metric enabled; {} uses that metric's default arguments.
 PAIRED_METRICS = {
-    "best_individual_found": {},  
-    "ktau": {},  
-    # "ktau_top_X_percent": {"X": 10},  
-    # "time_to_find_top_X_percent": {"X": 1},  
+    "best_individual_found": {},
+    "ktau": {},
+    # "ktau_top_X_percent": {"X": 10},
+    # "time_to_find_top_X_percent": {"X": 1},
 }
 # Time includes initialization; missing the target scores search budget + 1.
 
@@ -49,7 +49,7 @@ MODEL = "model"
 DATA_PATH = SOTA_ROOT
 # Path to local LLM model path used by server.py for LLM operations
 MODEL_PATH = "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct/"
-VARIANT_DIR = os.path.join(SOTA_ROOT, "models/llmge_models") 
+VARIANT_DIR = os.path.join(SOTA_ROOT, "models/llmge_models")
 TRAIN_FILE = os.path.join(SOTA_ROOT, "eval.py")
 SURROGATE_CORPUS_PATH = "/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv"
 SURROGATE_RUN_DIR = os.path.join(SOTA_ROOT, "run_nb201")
@@ -91,7 +91,13 @@ ISLAND_LLMS = [LLM_QWEN, LLM_MIXTRAL, LLM_DEEPSEEK, LLM_LLAMA3]
 ENVIRONMENT_DIR = os.path.join(ROOT_DIR, ".venv")
 SLURM_CONFIG_DIR = os.path.join(ROOT_DIR, "slurm-config/")
 LOCAL_LLM = True
-HOSTNAME_DIR = os.path.join(ROOT_DIR, "hostname.log")
+# Overridable so two LLM servers can run in parallel (different host files / ports).
+_hostname_file = os.getenv("LLMGE_HOSTNAME_FILE", "hostname.log")
+HOSTNAME_DIR = (
+    _hostname_file
+    if os.path.isabs(_hostname_file)
+    else os.path.join(ROOT_DIR, _hostname_file)
+)
 
 # Multi-island settings
 GLOBAL_DATA_PATH = "global_data"
@@ -120,7 +126,7 @@ LOCAL = False
 if LOCAL:
     RUN_COMMAND = 'bash'
     DELAYED_CHECK = False
-else: 
+else:
     RUN_COMMAND = 'sbatch'
     DELAYED_CHECK = True
 MACOS = platform.system() == "Darwin"
@@ -134,13 +140,36 @@ elif torch.cuda.is_available():
 else:
     DEVICE = 'cpu'
 
+# Random architectures evaluated before the surrogate is trained (BANANAS num_init).
+# Papers / NASLib default to 10; COLE uses 20. Was hard-coded to 50.
+NUM_INIT = 20
+# BANANAS search seed (NASLib). Override with LLMGE_SEARCH_SEED for harder random starts
+# (e.g. seed 1 ≈ 68.7% random-best vs seed 242 ≈ 73.0%).
+SEARCH_SEED = int(os.getenv("LLMGE_SEARCH_SEED", "242"))
 # resolves to {MODEL}_{gene_id}
 RUNLINE_TMP = '{}_{}'
-EVAL_RUNLINE = "uv run python {} --model {} --variant_dir {VARIANT_DIR}"
+EVAL_RUNLINE = (
+    f"uv run python {{}} --model {{}} --variant_dir {{VARIANT_DIR}} "
+    f"--num_init {NUM_INIT} --seed {SEARCH_SEED}"
+)
 """
 Evolution Constants/Params
 """
-FITNESS_WEIGHTS = (1.0, -1.0)  # maximize kendall_tau, minimize mse
+# Solo-surrogate second objective (coevolution uses configured metric weights).
+# Default mse matches implement-coevolution-mvp solo path. precision is archive-only
+# (tmp/PRECISION_ARCHIVE.md); set LLMGE_FITNESS_MODE=precision to reproduce those runs.
+# Solo eval writes tau,precision_top10,mse; run_improved selects which pair is fitness.
+# Coevolution eval writes its configured paired objective vector.
+_FITNESS_MODE = os.getenv("LLMGE_FITNESS_MODE", "mse").strip().lower()
+if _FITNESS_MODE not in ("precision", "mse"):
+    raise ValueError(f"LLMGE_FITNESS_MODE must be 'precision' or 'mse', got {_FITNESS_MODE!r}")
+FITNESS_MODE = _FITNESS_MODE
+if FITNESS_MODE == "mse":
+    # Solo / MVP legacy baseline: maximize Kendall τ, minimize MSE.
+    FITNESS_WEIGHTS = (1.0, -1.0)
+else:
+    # Archive: maximize Kendall τ and Precision@top-10%; MSE is tie-break only.
+    FITNESS_WEIGHTS = (1.0, 1.0)
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10
