@@ -1,0 +1,13 @@
+This code controls how a NAS search uses its surrogate to choose which architectures to evaluate next. The goal is search efficiency: reach an architecture within 99% of the best accuracy in NAS-Bench-201 using as few ground-truth evaluations as possible, while keeping good ranking quality (Kendall Tau) on held-out architectures.
+
+Improve the strategy with that goal as the top priority. Useful directions include generating candidates near the best architectures found so far, avoiding re-evaluating architectures that were already seen, choosing a diverse batch rather than many near-duplicates, and spending fewer evaluations on candidates the surrogate is confident are weak. Prefer a small, robust change over a large rewrite.
+
+Keep the code runnable inside the existing pipeline:
+- Keep the class name SurrogateUsageOptimizer, its constructor arguments, and the call to super().__init__.
+- Only use names that are already imported or defined in this file or provided by the parent Bananas class; do not invent new classes, modules, or config keys.
+- Every method that returns candidates must return a non-empty list.
+
+The current code block:
+```python
+{}
+```

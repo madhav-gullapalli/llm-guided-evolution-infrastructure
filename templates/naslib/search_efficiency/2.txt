@@ -1,0 +1,13 @@
+Modify this surrogate-assisted NAS search strategy so it balances exploration and exploitation over a fixed, small evaluation budget. After 50 random warm-up evaluations, the strategy has only about 50 more evaluations to find an architecture within 99% of the best one, so it should not stay random for long, but it also should not lock onto one region too early.
+
+Prefer simple, budget-aware schedules: for example, use surrogate uncertainty to explore while training data is scarce, then shift toward the highest predicted candidates as the surrogate improves. Judge every edit by whether it would reduce the number of evaluations needed to reach a near-best architecture while keeping the surrogate's ranking quality (Kendall Tau) strong.
+
+Keep the code runnable inside the existing pipeline:
+- Keep the class name SurrogateUsageOptimizer, its constructor arguments, and the call to super().__init__.
+- Only use names that are already imported or defined in this file or provided by the parent Bananas class; do not invent new classes, modules, or config keys.
+- Every method that returns candidates must return a non-empty list.
+
+The current code block:
+```python
+{}
+```

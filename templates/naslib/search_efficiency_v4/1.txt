@@ -1,0 +1,29 @@
+This code is the surrogate-usage strategy of a BANANAS-style neural architecture search on NAS-Bench-201 (CIFAR-100). Goal: reach an architecture within 99% of the best accuracy in the space in about 45 or fewer ground-truth evaluations, while raising the surrogate's overall Kendall Tau on held-out architectures to about 0.39 or higher (it is about 0.35 now).
+
+Focus on candidate generation in _get_new_candidates. Local search, which mutates the current best architecture, is known to be very strong on NAS-Bench-201. Make sure the incumbent and the top few architectures get many one-step mutations, drop candidates whose arch_hash was already evaluated, and keep a small share of random architectures so the surrogate keeps seeing other regions. Prefer a small, robust change over a large rewrite.
+
+What we already know (results from earlier runs, NAS-Bench-201 CIFAR-100, 100 evaluations, averaged over 20 seeds):
+- Standard BANANAS (refit every 10 evaluations) needed about 88 evaluations to reach 99% of the best accuracy, with overall Kendall Tau about 0.44.
+- This code already refits after every evaluation (self.k = 1). That cut it to about 60 evaluations but lowered overall Kendall Tau to about 0.35. Keep self.k = 1.
+- Only re-weighting the acquisition score with the ensemble mean and spread, and skipping duplicates, did not help on its own.
+- Our best strategy so far (one-step mutations of the 10 best architectures, picking the most uncertain candidate 20% of the time, and a 10-model ensemble) needed about 45 evaluations, but its overall Kendall Tau was about 0.35, below standard BANANAS (about 0.39).
+- The same search changes with a 3-model ensemble raised overall Kendall Tau to about 0.38, but needed about 65 evaluations.
+- Kendall Tau drops when the surrogate is trained almost only on architectures close to the best ones, because it never sees the rest of the space.
+
+How this code is run (important):
+- The evaluator uses its own new_epoch loop. It only calls these methods of SurrogateUsageOptimizer: __init__, _get_train(), _get_ensemble(), _get_new_candidates(ytrain), and _get_best_candidates(candidates, acq_fn). Edits to new_epoch or _acquisition are thrown away, so put every change inside those methods (a new helper only counts if one of them calls it).
+- After a random warm-up, every evaluation the loop refits the surrogate ensemble, calls _get_new_candidates(ytrain), then _get_best_candidates(candidates, acq_fn), and evaluates the returned candidate.
+- A candidate is a torch.nn.Module with .arch and .arch_hash. To make one: model = torch.nn.Module(); model.arch = child; model.arch_hash = child.get_hash(). self.train_data holds evaluated models with .arch, .arch_hash and .accuracy.
+- To mutate an architecture: child = self.search_space.clone(); child.mutate(parent_arch, dataset_api=self.dataset_api). mutate is a method of the new architecture object, takes the parent as its first argument, and has no other options. For a random architecture use self._sample_new_model().
+- acq_fn(list_of_archs) returns one score per architecture (higher is more promising). self.ensemble.query(list_of_archs) returns an array of shape (num_models, num_archs) of predicted accuracies; its spread across models is the uncertainty.
+- Available names: np, torch, norm (scipy.stats), self.num_candidates, self.num_arches_to_mutate, self.max_mutations, self.num_ensemble.
+
+Keep the code runnable:
+- Keep the class name SurrogateUsageOptimizer, its constructor arguments, the call to super().__init__, and self.k = 1.
+- Do not import new libraries and do not invent attributes, classes, or config keys.
+- _get_new_candidates must return a non-empty list of candidate models, and _get_best_candidates must return a non-empty list taken from its input.
+
+The current code block:
+```python
+{}
+```
