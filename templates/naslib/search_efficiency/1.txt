@@ -1,0 +1,13 @@
+This code is the surrogate-usage strategy inside a BANANAS-style NAS loop on NAS-Bench-201. The first 50 architectures are sampled at random; after that, this strategy decides which architectures receive the remaining expensive ground-truth evaluations. The strategy is judged by how few total evaluations it needs before it finds an architecture within 99% of the best accuracy in the search space, and by how well the surrogate ranks held-out architectures (Kendall Tau).
+
+Improve the strategy so the search reaches a near-best architecture using fewer evaluations. Every evaluation spent on a weak candidate is wasted budget, so favor changes to candidate generation, acquisition scoring, and batch selection that move the search toward the top of the space sooner.
+
+Keep the code runnable inside the existing pipeline:
+- Keep the class name SurrogateUsageOptimizer, its constructor arguments, and the call to super().__init__.
+- Only use names that are already imported or defined in this file or provided by the parent Bananas class; do not invent new classes, modules, or config keys.
+- Every method that returns candidates must return a non-empty list.
+
+The current code block:
+```python
+{}
+```

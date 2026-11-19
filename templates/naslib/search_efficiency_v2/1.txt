@@ -1,0 +1,20 @@
+This code is the surrogate-usage strategy of a BANANAS-style neural architecture search on NAS-Bench-201 (CIFAR-100). Improve it so the search reaches an architecture within 99% of the best accuracy in the space using as few ground-truth evaluations as possible, while keeping the surrogate's ranking quality (Kendall Tau) reasonable.
+
+Focus on how candidates are selected in _get_best_candidates: for example, skip candidates whose arch_hash was already evaluated, combine the acquisition score with the ensemble mean and spread, or pick a batch that is not made of near-duplicates. Prefer a small, robust change over a large rewrite.
+
+How this code is run (important):
+- The evaluator uses its own new_epoch loop. It only calls these methods of SurrogateUsageOptimizer: __init__, _get_train(), _get_ensemble(), _get_new_candidates(ytrain), and _get_best_candidates(candidates, acq_fn). Edits to new_epoch or _acquisition are thrown away, so put every change inside those methods (a new helper only counts if one of them calls it).
+- The search starts with a random warm-up. After that, every self.k evaluations (default 10) the loop refits the surrogate ensemble, calls _get_new_candidates(ytrain), then _get_best_candidates(candidates, acq_fn), and evaluates the returned list one by one.
+- A candidate is a torch.nn.Module with .arch (a NAS-Bench-201 architecture object) and .arch_hash. self.train_data holds evaluated models with .arch, .arch_hash and .accuracy.
+- acq_fn(list_of_archs) returns one score per architecture (higher is more promising; Thompson sampling by default). self.ensemble.query(list_of_archs) returns an array of shape (num_models, num_archs) with predicted accuracies.
+- Useful existing tools: self._sample_new_model(), self.search_space.clone(), arch.mutate(parent_arch, dataset_api=self.dataset_api), arch.get_hash(), self.num_candidates, self.num_arches_to_mutate, self.max_mutations, np, torch, and norm (scipy.stats).
+
+Keep the code runnable:
+- Keep the class name SurrogateUsageOptimizer, its constructor arguments, and the call to super().__init__.
+- Do not import new libraries and do not invent attributes, classes, or config keys.
+- _get_best_candidates must return a non-empty list of candidate models taken from its input.
+
+The current code block:
+```python
+{}
+```
