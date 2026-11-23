@@ -24,7 +24,7 @@ from naslib.utils.log import log_every_n_seconds
 import pickle
 import os
 
-from search_spaces.nasbench201.conversions import convert_op_indices_to_naslib, convert_naslib_to_str, convert_str_to_op_indices, convert_naslib_to_op_indices
+from naslib.search_spaces.nasbench201.conversions import convert_op_indices_to_naslib, convert_naslib_to_str, convert_str_to_op_indices, convert_naslib_to_op_indices
 logger = logging.getLogger(__name__)
 
 

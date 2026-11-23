@@ -22,6 +22,7 @@ from src.cfg import surrogate_coev as config
 from src.coevolution import (PairRecord, RankProxy, SEARCH_BUDGET, barrier_passes,
                              random_uniform_coverage, rank_pairs, rank_statistics, validate_pairing)
 from src.source_composition import compose_sources
+from src.seed_models import discover_seed_models
 from src.experiment_metrics import validate_config, fitness_type, configured_objectives
 from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
 
@@ -53,7 +54,19 @@ class PopulationWorker:
         self.root = Path(root).resolve() / name
         variant_dir = self.root / "variants"
         variant_dir.mkdir(parents=True, exist_ok=True)
+        seed_directory = (str(Path(legacy.ROOT_DIR, settings["seed_dir"]).resolve())
+                          if "seed_dir" in settings else None)
+        seeds = (discover_seed_models(seed_directory) if seed_directory is not None else
+                 settings.get("seed_files", [settings["seed_file"]]))
+        if not isinstance(seeds, (list, tuple)) or not seeds:
+            raise ValueError("seed_files must be a non-empty list of seed paths")
+        seed_paths = [str(Path(legacy.ROOT_DIR, seed).resolve()) for seed in seeds]
+        for seed in seed_paths:
+            if not Path(seed).is_file():
+                raise FileNotFoundError(f"Seed model does not exist: {seed}")
         self.state = {
+            "SEED_NETWORKS": seed_paths,
+            "SEED_DIRECTORY": seed_directory,
             "SEED_NETWORK": str(Path(legacy.ROOT_DIR, settings["seed_file"]).resolve()),
             "VARIANT_DIR": str(variant_dir), "OUTPUT_DIR": str(self.root / "jobs"),
             "PROMPT_GLOB": legacy.resolve_prompt_glob(settings["prompt_group"]),
@@ -257,7 +270,7 @@ def evaluate_matches(workers, pairings, generation, attempt, root):
     variants.mkdir(parents=True, exist_ok=True)
     state = {"VARIANT_DIR": str(variants), "OUTPUT_DIR": str(match_root / "jobs"),
              "GENERATION": generation, "GLOBAL_DATA": {},
-             "EVAL_RUNLINE": legacy.EVAL_RUNLINE + " --coevolution",
+             "EVAL_RUNLINE": legacy.EVAL_RUNLINE + f" --coevolution --numEvols {config.numEvols}",
              "FITNESS_WEIGHTS": pair_fitness.weights,
              "INVALID_FITNESS_MAX": invalid,
              "PLACEHOLDER_FITNESS": placeholder}
@@ -329,7 +342,7 @@ def evaluate_individuals(workers, generation, attempt, root, population="surroga
     variants.mkdir(parents=True, exist_ok=True)
     state = {"VARIANT_DIR": str(variants), "OUTPUT_DIR": str(match_root / "jobs"),
              "GENERATION": generation, "GLOBAL_DATA": {},
-             "EVAL_RUNLINE": legacy.EVAL_RUNLINE + f" --{population}_individual --metric-options " + shlex.quote(json.dumps(options).replace("{", "{{").replace("}", "}}"))}
+             "EVAL_RUNLINE": legacy.EVAL_RUNLINE + f" --{population}_individual --numEvols {config.numEvols} --metric-options " + shlex.quote(json.dumps(options).replace("{", "{{").replace("}", "}}"))}
     Path(state["OUTPUT_DIR"], str(generation)).mkdir(parents=True, exist_ok=True)
     individuals, genes = [], []
     for candidate in worker.population:
@@ -355,11 +368,14 @@ def evaluate_individuals(workers, generation, attempt, root, population="surroga
             values = individual.fitness.values
             if (tuple(values) != tuple(legacy.INVALID_FITNESS_MAX)
                     and np.isfinite(values).all()):
-                if population == "usage" and any(value < 0 or not float(value).is_integer() for value in values):
+                if population == "usage" and any(value < 0 for value in values):
                     continue
                 value = (values[1] if population == "usage" or metric == "mse" else values[0])
+                info = state["GLOBAL_DATA"].get(individual[0], {})
+                samples = info.get("metric_samples", {}).get(metric, value)
                 worker.individual_metrics.setdefault(gene, {}).update({
-                    metric: value, "evaluation_id": individual[0], "seed": SAMPLE_SEED,
+                    metric: samples, "evaluation_id": individual[0],
+                    "seeds": info.get("evaluation_seeds", [SAMPLE_SEED]),
                 })
     finally:
         save_intermediate(root, workers, generation, attempt, f"{population}_individual_evaluation", state)
@@ -374,7 +390,7 @@ def run(checkpoints):
         raise ValueError("MVP requires exactly one surrogate and one usage worker")
     fields = {"seed_file", "start_population_size", "population_size", "num_elites",
               "crossover_probability", "mutation_probability", "llm_model", "prompt_group"}
-    if any(set(settings) != fields
+    if any(set(settings) - {"seed_files", "seed_dir"} != fields
            for settings in [*config.POPULATIONS.values(), *populations.values()]):
         raise ValueError("Unsupported population settings; MVP has one worker per population")
     if any(owner not in config.POPULATIONS for owner in config.COMPOSITION_EXPORTS.values()):
@@ -535,7 +551,7 @@ def configuration_snapshot():
             "matches": config.matches, "kappa": config.kappa,
             "exports": copy.deepcopy(config.COMPOSITION_EXPORTS)}
     snapshot["experiment"] = {key: copy.deepcopy(getattr(config, key)) for key in
-        ("SEPARATE_POPULATIONS", "SURROGATE_EVOL", "USAGE_EVOL", "SURROGATE_METRICS", "USAGE_METRICS", "PAIRED_METRICS")}
+        ("SEPARATE_POPULATIONS", "SURROGATE_EVOL", "USAGE_EVOL", "SURROGATE_METRICS", "USAGE_METRICS", "PAIRED_METRICS", "numEvols", "METRIC_AGGREGATION")}
     if not config.SEPARATE_POPULATIONS:
         snapshot["paired_population"] = copy.deepcopy(config.PAIRED_POPULATION)
     return snapshot

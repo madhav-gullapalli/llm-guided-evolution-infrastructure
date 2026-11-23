@@ -15,9 +15,12 @@ class RuntimeConfig:
         )
         self.CLUSTER = os.getenv("LLMGE_CLUSTER", "pace-ice")
         self.SOTA_ROOT = os.getenv("LLMGE_SOTA_ROOT", sota_root)
+        seed_dir = os.path.join(self.SOTA_ROOT, "seed_models", "combined")
+        if not os.path.isdir(seed_dir):
+            seed_dir = self.SOTA_ROOT
         self.SEED_NETWORK = os.getenv(
             "LLMGE_SEED_NETWORK",
-            os.path.join(self.SOTA_ROOT, "model.py"),
+            os.path.join(seed_dir, "joint_seed.py" if seed_dir != self.SOTA_ROOT else "model.py"),
         )
         self.PORT = int(os.getenv("LLMGE_PORT", "12676"))
 

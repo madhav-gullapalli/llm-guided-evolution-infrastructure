@@ -56,7 +56,7 @@ def test_paired_objectives_affect_both_populations():
 
 def test_joint_seed_has_both_edit_blocks_and_fixed_imports():
     from pathlib import Path
-    path = Path(__file__).resolve().parents[1] / 'sota/Surrogate/joint_seed.py'
+    path = Path(__file__).resolve().parents[1] / 'sota/Surrogate/seed_models/combined/joint_seed.py'
     header, surrogate, usage = path.read_text().split('# --OPTION--')
     assert 'import Bananas' in header
     assert 'import XGBoost' in header

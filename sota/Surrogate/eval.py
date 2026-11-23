@@ -21,7 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.cfg.constants_surrogate import (
-    MODEL as DEFAULT_MODEL_MODULE,
+    MODEL,
+    numEvols,
+    METRIC_AGGREGATION,
     PAIRED_METRICS,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
@@ -39,11 +41,16 @@ from analysis import (
     records_from_test_set,
     write_prediction_analysis,
 )
+# The seed lives separately from generated variants, whose names use MODEL.
+DEFAULT_MODEL_MODULE = "sota.Surrogate.seed_models.combined.joint_seed"
+
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default=None, help='Override the surrogate family defined in the model module')
+parser.add_argument("--single-evaluation", action="store_true", help=argparse.SUPPRESS)
+parser.add_argument("--numEvols", type=int, default=numEvols, help="Independent seeded evaluations per candidate")
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
 parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=True)
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
@@ -63,6 +70,28 @@ parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene i
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
 _coevolution = custom_args.coevolution or custom_args.usage_individual
+
+from src.repeated_evaluation import repeat_evaluation, validate_num_evols
+validate_num_evols(custom_args.numEvols)
+if not custom_args.single_evaluation:
+    if custom_args.usage_individual:
+        metric_names = ['real_evaluations', 'surrogate_usage']
+    elif custom_args.surrogate_individual:
+        import json as _repeat_json
+        options = _repeat_json.loads(custom_args.metric_options)
+        metric_names = ['ktau_top_X_percent' if 'top_percent' in options else 'ktau', 'mse']
+    elif custom_args.coevolution:
+        metric_names = list(PAIRED_METRICS)
+    else:
+        metric_names = ['ktau', 'precision_top10', 'mse']
+    evaluation_gene = custom_args.model.split('model_', 1)[-1] if 'model_' in custom_args.model else 'seed'
+    result_path = Path(SURROGATE_RESULTS_DIR) / f"{evaluation_gene}_results.txt"
+    repeat_evaluation([sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+                      result_path, metric_names, custom_args.numEvols,
+                      custom_args.seed, METRIC_AGGREGATION)
+    print('job done')
+    raise SystemExit(0)
+
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -89,6 +118,7 @@ import json
 
 # Store custom args for use later in the script
 args = custom_args
+utils.set_seed(args.seed)
 
 # --- LOAD EVOLVED MODEL CONFIG ---
 import importlib
@@ -506,7 +536,7 @@ if args.usage_individual:
     from sota.Surrogate.usage_evaluation import evaluate_usage
     from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
 
-    utils.set_seed(SAMPLE_SEED)
+    utils.set_seed(args.seed)
     usage_metrics = evaluate_usage(
         lambda predictor_factory: _model_module.SurrogateUsageOptimizer(
             config, predictor_cls=predictor_factory, predictor_kwargs={}),
@@ -526,7 +556,7 @@ if args.surrogate_individual:
     from sota.Surrogate.surrogate_evaluation import evaluate_surrogate, SAMPLE_SEED
 
     # Both fitting and held-out measurements are independent of search policy.
-    utils.set_seed(SAMPLE_SEED)
+    utils.set_seed(args.seed)
     predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
 
     def independent_architecture(spec):
@@ -538,7 +568,7 @@ if args.surrogate_individual:
         lambda: LLM_NB201_Predictor(**predictor_kwargs),
         independent_architecture,
         lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
-        **json.loads(args.metric_options),
+        **{**json.loads(args.metric_options), "seed": args.seed},
     )
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
@@ -757,7 +787,7 @@ if not RUN_BASELINES or RUN_ALL:
 
     # run_experiment saves surrogate metrics to a JSON inside config.out_dir
     import glob as _glob
-    metrics_files = sorted(_glob.glob(f"{config.out_dir}/**/surrogate_metrics_*.json", recursive=True))
+    metrics_files = sorted(_glob.glob(f"{config.save}/**/surrogate_metrics_*.json", recursive=True))
     if metrics_files:
         import json as _json
         with open(metrics_files[-1]) as _f:
@@ -770,7 +800,7 @@ if not RUN_BASELINES or RUN_ALL:
         final_mse = float('inf')
 
     # Precision@top-10% diagnostic (archive solo fitness when LLMGE_FITNESS_MODE=precision).
-    pred_csvs = sorted(_glob.glob(f"{config.out_dir}/**/analysis/predictions_*.csv", recursive=True))
+    pred_csvs = sorted(_glob.glob(f"{config.save}/**/analysis/predictions_*.csv", recursive=True))
     final_precision_top10 = (
         precision_at_top_from_predictions_csv(pred_csvs[-1]) if pred_csvs else None
     )

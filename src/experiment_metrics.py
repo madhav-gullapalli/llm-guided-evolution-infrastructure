@@ -4,6 +4,7 @@ import math
 import numpy as np
 from deap import base
 from scipy.stats import kendalltau
+from src.repeated_evaluation import mean_metric, validate_num_evols
 
 SCOPES = {
     'surrogate': {'ktau': 1., 'ktau_top_X_percent': 1., 'mse': -1.},
@@ -36,6 +37,9 @@ def validate_metrics(scope, metrics):
 
 
 def validate_config(config):
+    validate_num_evols(getattr(config, "numEvols", 1))
+    if getattr(config, "METRIC_AGGREGATION", "mean") != "mean":
+        raise ValueError("Only mean metric aggregation is supported")
     for key in ('SEPARATE_POPULATIONS', 'SURROGATE_EVOL', 'USAGE_EVOL'):
         if type(getattr(config, key)) is not bool:
             raise ValueError(f'{key} must be boolean')
@@ -124,7 +128,10 @@ def configured_objectives(records, candidate_ids, individual_metrics, config):
                 continue
             vector = tuple((max if weight > 0 else min)(p[i] for p in pairs)
                            for i, weight in enumerate(paired_weights))
-            vector += tuple(standalone[name] for name in metrics)
+            try:
+                vector += tuple(mean_metric(standalone[name]) for name in metrics)
+            except ValueError:
+                continue
             if all(math.isfinite(v) for v in vector):
                 vectors[gene] = vector
         candidates = [PairRecord(gene, {population: gene}, vector, fitness, ())

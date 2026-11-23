@@ -3,23 +3,22 @@
 Compatible with the repository's constants.py symlink convention. Jobs, LLM
 runtime, objectives, evaluator budgets and era settings are inherited unchanged.
 
-Usage seed alternatives (meeting note: search algorithms besides BANANAS):
-  - coev_usage.py         — BANANAS acquisition (default)
-  - coev_usage_random.py  — random top-k selection (set seed_file below)
-Solo USE mode: export LLMGE_USAGE_SEED=bananas|random → usage_{seed}.py
+Initialization seeds are discovered from each population's seed_dir.
+seed_file remains the fixed partner and EoT reference.
 """
 from src.cfg.constants_surrogate import *
 
-# Settings for separate populations; seed_file also supplies frozen partners.
 POPULATIONS = {
     "surrogate": {
-        "seed_file": "sota/Surrogate/coev_surrogate.py",
+        "seed_file": "sota/Surrogate/seed_models/surrogate/coev_surrogate.py",
+        "seed_dir": "sota/Surrogate/seed_models/surrogate",
         "start_population_size": 40, "population_size": 20, "num_elites": 3,
         "crossover_probability": 0.35, "mutation_probability": 0.8,
         "llm_model": "llama3", "prompt_group": "naslib/general",
     },
     "usage": {
-        "seed_file": "sota/Surrogate/coev_usage.py",
+        "seed_file": "sota/Surrogate/seed_models/usage/coev_usage.py",
+        "seed_dir": "sota/Surrogate/seed_models/usage",
         "start_population_size": 40, "population_size": 20, "num_elites": 3,
         "crossover_probability": 0.35, "mutation_probability": 0.8,
         "llm_model": "llama3", "prompt_group": "naslib/ranking",
@@ -42,4 +41,5 @@ def aggregate_pair_scores(values: list[float]) -> float:
 # A joint genome uses the same operators/settings as an independent worker.
 # Both surrogate and usage OPTION blocks occur in this seed.
 PAIRED_POPULATION = {**POPULATIONS["surrogate"],
-                     "seed_file": "sota/Surrogate/joint_seed.py"}
+                     "seed_file": "sota/Surrogate/seed_models/combined/joint_seed.py",
+                     "seed_dir": "sota/Surrogate/seed_models/combined"}

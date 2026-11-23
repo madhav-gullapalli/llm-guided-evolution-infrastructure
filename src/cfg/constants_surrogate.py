@@ -6,6 +6,10 @@ import yaml
 # True: evolve surrogate and usage in separate populations.
 # False: evolve one population of joint surrogate/usage genomes; only paired
 # metrics apply, and the two component evolution flags below are ignored.
+# Independent seeded evaluations per candidate; selection uses every sample.
+numEvols = 20
+METRIC_AGGREGATION = "mean"
+
 SEPARATE_POPULATIONS = False
 
 # In separate populations, False freezes that component at its configured seed.
@@ -41,10 +45,9 @@ PAIRED_METRICS = {
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOTA_ROOT = os.path.join(ROOT_DIR, 'sota/Surrogate')
-# Both seed programs contain a concrete surrogate and a concrete usage
-# strategy.  Only their # --OPTION-- placement differs, so the unchanged
-# LLMGE block mutation pipeline selects the intended component.
-SEED_NETWORK = os.path.join(SOTA_ROOT, 'model.py')
+# Baseline evolution uses joint seeds; coevolution scopes directories per worker.
+SEED_DIRECTORY = os.path.join(SOTA_ROOT, 'seed_models', 'combined')
+SEED_NETWORK = os.path.join(SEED_DIRECTORY, 'joint_seed.py')
 MODEL = "model"
 DATA_PATH = SOTA_ROOT
 # Path to local LLM model path used by server.py for LLM operations

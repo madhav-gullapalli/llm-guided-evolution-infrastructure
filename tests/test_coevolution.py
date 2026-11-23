@@ -119,7 +119,7 @@ def test_generic_composition_namespaces(tmp_path):
 def test_existing_seed_composition(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(REPO / "sota/Surrogate"))
     module = import_file(compose_sources(
-        [REPO / "sota/Surrogate/model.py", REPO / "sota/Surrogate/usage_bananas.py"],
+        [REPO / "sota/Surrogate/seed_models/surrogate/coev_surrogate.py", REPO / "sota/Surrogate/seed_models/usage/coev_usage.py"],
         {"get_surrogate_config": 0, "build_predictor_kwargs": 0, "SurrogateUsageOptimizer": 1},
         tmp_path / "model_seed_pair.py"))
     cfg = module.get_surrogate_config(corpus_path="test.csv")
@@ -243,10 +243,15 @@ def test_joint_smoke_selection_checkpoint_resume(local_jobs, tmp_path, monkeypat
     assert sum(call["python_file"] == "src/llm_mutation.py" for call in llm_calls) == 12
     assert coev.legacy.VARIANT_DIR == original_globals[0]
     assert coev.legacy.GLOBAL_DATA is original_globals[1]
+    seed_paths = {
+        (REPO / seed).resolve()
+        for cfg in settings.values()
+        for seed in coev.discover_seed_models(REPO / cfg["seed_dir"])
+    }
     for call in llm_calls:
         source = Path(call["input_filename_x"])
         destination = Path(call["output_filename"])
-        if source.name not in ("coev_surrogate.py", "coev_usage.py"):
+        if source.resolve() not in seed_paths:
             assert source.parent == destination.parent
         if call.get("input_filename_y"):
             assert Path(call["input_filename_y"]).parent == destination.parent
@@ -544,7 +549,7 @@ def test_component_prompts_include_contract_and_fixed_header(local_jobs, monkeyp
     monkeypatch.setattr(coev.config, "SURROGATE_METRICS", {})
     monkeypatch.setattr(coev.config, "USAGE_METRICS", {})
     monkeypatch.setattr(coev.config, "PAIRED_METRICS", {"ktau": {}, "best_individual_found": {}})
-    seed = REPO / f'sota/Surrogate/coev_{component}.py'
+    seed = REPO / f'sota/Surrogate/seed_models/{component}/coev_{component}.py'
     monkeypatch.setattr(legacy, 'SEED_NETWORK', str(seed))
     monkeypatch.setattr(legacy, 'PROMPT_GLOB', f'templates/naslib/{group}/*.txt')
     editable = seed.read_text().split('# --OPTION--', 1)[1]
@@ -650,3 +655,48 @@ def test_configured_joint_population(local_jobs, tmp_path, monkeypatch):
     assert len(evaluations) >= 6
     assert all('joint_seed.py' in call['input_filename_x'] or '/paired/' in call['input_filename_x']
                for call in llm_calls)
+
+
+def test_repeated_metric_lists_survive_selection_and_checkpoint(local_jobs, tmp_path, monkeypatch):
+    import json
+    coev, _, _ = local_jobs
+    settings = copy.deepcopy(coev.config.POPULATIONS)
+    for cfg in settings.values():
+        cfg.update(start_population_size=3, population_size=3, num_elites=2)
+    monkeypatch.setattr(coev.config, 'POPULATIONS', settings)
+    monkeypatch.setattr(coev.config, 'SURROGATE_METRICS', {'mse': {}})
+    monkeypatch.setattr(coev.config, 'USAGE_METRICS', {'surrogate_usage': {}})
+    monkeypatch.setattr(coev.config, 'matches', 9)
+    monkeypatch.setattr(coev.config, 'numEvols', 20)
+    monkeypatch.setattr(coev.legacy, 'migration_gen', 1)
+    original_job = coev.legacy.subprocess.run
+
+    def repeated_job(command, **kwargs):
+        result = original_job(command, **kwargs)
+        args = shlex.split(Path(command[1]).read_text())
+        name = args[args.index('--model') + 1]
+        assert args[args.index('--numEvols') + 1] == '20'
+        path = Path(coev.legacy.SOTA_ROOT, 'results', f"{name.removeprefix('model_')}_results.txt")
+        values = [float(value) for value in path.read_text().split(',')]
+        names = (['real_evaluations', 'surrogate_usage'] if '--usage_individual' in args else
+                 ['ktau', 'mse'] if '--surrogate_individual' in args else
+                 list(coev.config.PAIRED_METRICS))
+        samples = {name: [value] * 20 for name, value in zip(names, values)}
+        path.with_suffix('.json').write_text(json.dumps({
+            'numEvols': 20, 'seeds': list(range(242, 262)), 'metrics': samples}))
+        return result
+
+    monkeypatch.setattr(coev.legacy.subprocess, 'run', repeated_job)
+    root = tmp_path / 'repeated'
+    coev.run(root)
+    checkpoint, _, _ = coev.legacy.load_checkpoint(str(root), global_path=str(root))
+    for population, metric, value in [('surrogate', 'mse', 0.01), ('usage', 'surrogate_usage', 900)]:
+        measurements = checkpoint['workers'][population]['individual_metrics']
+        assert measurements
+        assert all(result[metric] == [value] * 20 for result in measurements.values())
+    with (root / 'global_data/global_gen_1.pkl').open('rb') as file:
+        saved = pickle.load(file)
+    paired = [info for gene, info in saved['GLOBAL_DATA'].items() if gene.startswith('coev_')]
+    assert len(paired) == 9
+    assert all(info['fitness'] == (0.9, 1.0) for info in paired)
+    assert all(info['metric_samples']['ktau'] == [0.9] * 20 for info in paired)

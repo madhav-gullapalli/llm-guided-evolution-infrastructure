@@ -22,6 +22,8 @@ from src.utils.print_utils import print_population, print_scores, box_print, pri
 from src.llm_utils import split_file, retrieve_base_code, active_block_indices
 from src.cfg.constants import *
 from src.cfg import constants
+from src.seed_models import discover_seed_models
+from src.repeated_evaluation import mean_metric
 import glob
 
 # Runtime-configurable prompt glob and LLM defaults
@@ -32,6 +34,9 @@ AVAILABLE_LLM_MODELS = globals().get("ISLAND_LLMS", [])
 if not AVAILABLE_LLM_MODELS and globals().get("LLM_MODEL"):
     AVAILABLE_LLM_MODELS = [globals()["LLM_MODEL"]]
 
+# Optional list of initialization seeds; SEED_NETWORK remains the fallback/EoT seed.
+SEED_NETWORKS = globals().get("SEED_NETWORKS", None)
+SEED_DIRECTORY = globals().get("SEED_DIRECTORY", None)
 LLM_SERVER_READY = False
 
 def print_ancestry(data):
@@ -111,7 +116,7 @@ def update_ancestry(gene_id_child, gene_id_parent, ancestry, mutation_type=None,
         ancestry[gene_id_child]['MUTATE_TYPE'] = copy.deepcopy(parent_ancestry['MUTATE_TYPE']) + ["CrossOver"]
     return ancestry
 
-def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK, ROOT_DIR, llm_model):
+def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK, ROOT_DIR, llm_model, source_path=None):
     """
     Generates a template based on given probabilities and gene information.
     
@@ -165,14 +170,22 @@ def generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, SOTA_ROOT, SEED_NETWORK,
         with open(f'{ROOT_DIR}/templates/ConstantRules.txt', 'r') as file:
             rules_txt = file.read()
         template_txt = f'{template_txt}\n{rules_txt}'
-    component = {"coev_surrogate.py": "surrogate", "coev_usage.py": "usage"}.get(
+    component = {"coev_surrogate.py": "surrogate",
+                 "coev_surrogate_mlp.py": "surrogate_mlp", "coev_usage.py": "usage",
+                 "coev_usage_random.py": "usage", "coev_usage_npenas.py": "usage"}.get(
         os.path.basename(SEED_NETWORK))
+    context_source = source_path or SEED_NETWORK
+    with open(context_source) as file:
+        source_text = file.read()
+    # Descendants have generated filenames; retain the MLP contract when
+    # mutating them even though the population's EoT reference is XGBoost.
+    if "class CustomMLP" in source_text and "class CustomXGBoost" not in source_text:
+        component = "surrogate_mlp"
     if component:
         contract_path = os.path.join(ROOT_DIR, "templates", "naslib", "contracts", component + ".txt")
         with open(contract_path) as file:
             contract = file.read()
-        with open(SEED_NETWORK) as file:
-            fixed_header = file.read().split("# --OPTION--", 1)[0]
+        fixed_header = source_text.split("# --OPTION--", 1)[0]
         # This template is formatted later with the editable block. Escape
         # literal braces in context so dicts do not become format fields.
         context = "\n" + contract + "\nFixed module header (context only):\n" + fixed_header
@@ -186,7 +199,7 @@ def write_bash_script(llm_model,
                       output_filename=f'{VARIANT_DIR}/{MODEL}_x.py',
                       python_file='src/llm_mutation.py', 
                       top_p=0.1, temperature=0.2,
-                      gpu=None,
+                      gpu=None, seed_network=None,
                      ):
     
     print("WRITING write_bash_script, llm_model: ", llm_model)
@@ -203,7 +216,8 @@ def write_bash_script(llm_model,
     gene_id_child = fetch_gene(output_filename)
     if python_file=='src/llm_mutation.py':
         template_txt, mute_type = generate_template(PROB_EOT, GEN_COUNT, TOP_N_GENES, 
-                                                    SOTA_ROOT, SEED_NETWORK, ROOT_DIR, llm_model)
+                                                    SOTA_ROOT, seed_network or SEED_NETWORK, ROOT_DIR, llm_model,
+                                                    source_path=input_filename_x)
         if GEN_COUNT >= 0: # this does not need to happen at creation of population
             GLOBAL_DATA_ANCESTRY = update_ancestry(gene_id_child, gene_id_parent, GLOBAL_DATA_ANCESTRY, 
                                                     mutation_type=mute_type, gene_id_parent2=None)
@@ -435,8 +449,14 @@ def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4, top_p=0
     temperature = round(random.uniform(temp_min, temp_max), 2)
     # Assign a file path and name for the model creation bash
     file_path = os.path.join(out_dir, f'{gene_id}.sh')
-    successful_sub_flag, job_id, local_output = submit_bash(file_path, 
-                                            input_filename_x=f'{SEED_NETWORK}',
+    seeds = (discover_seed_models(SEED_DIRECTORY) if SEED_DIRECTORY is not None else
+             SEED_NETWORKS if SEED_NETWORKS is not None else [SEED_NETWORK])
+    if not isinstance(seeds, (list, tuple)) or not seeds:
+        raise ValueError("SEED_NETWORKS must be a non-empty list of seed paths")
+    seed_network = os.fspath(seeds[0] if len(seeds) == 1 else random.choice(seeds))
+    successful_sub_flag, job_id, local_output = submit_bash(file_path,
+                                            input_filename_x=seed_network,
+                                            seed_network=seed_network,
                                             output_filename =f'{VARIANT_DIR}/{MODEL}_{gene_id}.py',
                                             gpu=config.get("LLM_GPU"),
                                             python_file='src/llm_mutation.py',
@@ -444,7 +464,8 @@ def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4, top_p=0
                                             job_name="create_individual",
                                             top_p=top_p, temperature=temperature)
     GLOBAL_DATA[gene_id] = {'sub_flag':successful_sub_flag, 'job_id':job_id, 
-                            'status':'subbed file', 'fitness':None, 'start_time':time.time()}
+                            'status':'subbed file', 'fitness':None, 'start_time':time.time(),
+                            'seed_network': seed_network}
     GLOBAL_DATA_ANCESTRY[gene_id] = {'GENES':[gene_id], 'MUTATE_TYPE':["CREATED"]}
     
     individual = container([gene_id])  # Assign a file ID
@@ -574,7 +595,26 @@ def check4results(gene_id):
             with open(results_path, 'r') as file:
                 results = file.read()
             parts = [float(r.strip()) for r in results.split(',') if r.strip()]
-        except (OSError, ValueError) as exc:
+            samples_path = os.path.splitext(results_path)[0] + '.json'
+            if os.path.isfile(samples_path):
+                with open(samples_path) as file:
+                    measurements = json.load(file)
+                if 'metrics' in measurements and 'numEvols' in measurements:
+                    sample_vectors = list(measurements['metrics'].values())
+                    count = measurements['numEvols']
+                    if (type(count) is not int or count < 1
+                            or any(not isinstance(values, list) or len(values) != count for values in sample_vectors)
+                            or len(sample_vectors) != len(parts)
+                            or len(measurements['seeds']) != count):
+                        raise ValueError('Invalid repeated-evaluation sample shape')
+                    means = [mean_metric(values) for values in sample_vectors]
+                    if not np.allclose(parts, means):
+                        raise ValueError('Fitness differs from the mean of metric samples')
+                    GLOBAL_DATA[gene_id]['metric_samples'] = measurements['metrics']
+                    GLOBAL_DATA[gene_id]['evaluation_seeds'] = measurements['seeds']
+                    GLOBAL_DATA[gene_id]['numEvols'] = measurements['numEvols']
+
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             print(f"\t☠ Invalid fitness results for {gene_id}: {exc}", flush=True)
             GLOBAL_DATA[gene_id]['status'] = 'completed'
             GLOBAL_DATA[gene_id]['fitness'] = INVALID_FITNESS_MAX
