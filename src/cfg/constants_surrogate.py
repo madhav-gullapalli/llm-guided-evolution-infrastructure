@@ -11,6 +11,8 @@ numEvols = 20
 METRIC_AGGREGATION = "mean"
 
 SEPARATE_POPULATIONS = False
+# Export the initial separate populations as joint genomes in <run>_stitched.
+STITCH_INDIVIDUALS = True
 
 # In separate populations, False freezes that component at its configured seed.
 # Every candidate in the evolving population pairs with that unchanged seed;

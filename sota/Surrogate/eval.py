@@ -823,6 +823,24 @@ if not RUN_BASELINES or RUN_ALL:
         else:
             _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
+    # The repeat coordinator embeds this payload for every seed in its results.
+    details = {
+        "seed": int(config.search.seed),
+        "kendall_tau": final_kendall_tau,
+        "precision_top10": final_precision_top10,
+        "mse": final_mse,
+    }
+    if _coevolution:
+        details.update(
+            trajectory=search_results["trajectory"],
+            best_accuracy=search_results["best_accuracy"],
+            search_log=getattr(search_results["optimizer"], "trajectory", []),
+            candidate_log=getattr(search_results["optimizer"], "candidate_log", []),
+            surrogate_test_metrics=getattr(search_results["optimizer"], "surrogate_test_metrics", []),
+            surrogate_test_metrics_mse=getattr(search_results["optimizer"], "surrogate_test_metrics_mse", []),
+        )
+    Path(filename).with_suffix(".json").write_text(json.dumps(details, indent=2) + "\n")
+
     print(f"Results written to {filename}")
     print(f"  Kendall Tau:       {final_kendall_tau:.4f}")
     if _coevolution:

@@ -613,6 +613,8 @@ def check4results(gene_id):
                     GLOBAL_DATA[gene_id]['metric_samples'] = measurements['metrics']
                     GLOBAL_DATA[gene_id]['evaluation_seeds'] = measurements['seeds']
                     GLOBAL_DATA[gene_id]['numEvols'] = measurements['numEvols']
+                    # Keep the complete per-seed payload for statistical analysis.
+                    GLOBAL_DATA[gene_id]['evaluation_results'] = measurements
 
         except (OSError, ValueError, KeyError, TypeError) as exc:
             print(f"\t☠ Invalid fitness results for {gene_id}: {exc}", flush=True)

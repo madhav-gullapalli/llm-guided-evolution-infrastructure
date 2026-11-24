@@ -683,7 +683,10 @@ def test_repeated_metric_lists_survive_selection_and_checkpoint(local_jobs, tmp_
                  list(coev.config.PAIRED_METRICS))
         samples = {name: [value] * 20 for name, value in zip(names, values)}
         path.with_suffix('.json').write_text(json.dumps({
-            'numEvols': 20, 'seeds': list(range(242, 262)), 'metrics': samples}))
+            'numEvols': 20, 'seeds': list(range(242, 262)), 'metrics': samples,
+            'runs': [{'seed': seed, 'metrics': dict(zip(names, values)),
+                      'details': {'trajectory': [seed, seed + 1]}}
+                     for seed in range(242, 262)]}))
         return result
 
     monkeypatch.setattr(coev.legacy.subprocess, 'run', repeated_job)
@@ -700,3 +703,45 @@ def test_repeated_metric_lists_survive_selection_and_checkpoint(local_jobs, tmp_
     assert len(paired) == 9
     assert all(info['fitness'] == (0.9, 1.0) for info in paired)
     assert all(info['metric_samples']['ktau'] == [0.9] * 20 for info in paired)
+    for info in paired:
+        runs = info['evaluation_results']['runs']
+        assert len(runs) == 20
+        assert [run['seed'] for run in runs] == list(range(242, 262))
+        assert runs[0]['details']['trajectory'] == [242, 243]
+    assert checkpoint['evaluation_results'] == saved['GLOBAL_DATA']
+
+
+
+def test_initial_stitched_export(local_jobs, tmp_path, monkeypatch):
+    coev, _, _ = local_jobs
+    monkeypatch.setattr(coev.config, "STITCH_INDIVIDUALS", True)
+    root = tmp_path / "normal"
+    workers = {name: coev.PopulationWorker(name, settings, root)
+               for name, settings in coev.config.POPULATIONS.items()}
+    for name, worker in workers.items():
+        gene = name + "_initial"
+        worker.source(gene).write_bytes(Path(worker.state["SEED_NETWORK"]).read_bytes())
+        worker.population = [coev.legacy.creator.Individual([gene])]
+    (root / "other.txt").write_text("preserved")
+    pairs = [("surrogate_initial", "usage_initial")]
+    coev.stitch_individuals(root, workers, 2, 1, pairs)
+    assert not root.with_name("normal_stitched").exists()
+    coev.stitch_individuals(root, workers, 1, 1, pairs)
+    target = root.with_name("normal_stitched")
+    with (root / "initial_population_gen_0.pkl").open("rb") as file:
+        normal = pickle.load(file)
+    with (target / "initial_population_gen_0.pkl").open("rb") as file:
+        stitched = pickle.load(file)
+    assert set(normal["workers"]) == {"surrogate", "usage"}
+    assert set(stitched["workers"]) == {"paired"}
+    for name in normal["workers"]:
+        assert stitched["source_workers"][name]["population"] == normal["workers"][name]["population"]
+    assert (target / "other.txt").read_text() == "preserved"
+    paired = stitched["workers"]["paired"]
+    gene = paired["population"][0][0]
+    module = import_file(Path(paired["state"]["VARIANT_DIR"]) / f"model_{gene}.py")
+    assert module.get_surrogate_config.__module__.endswith("_source_0")
+    assert module.SurrogateUsageOptimizer.__module__.endswith("_source_1")
+    before = (target / "initial_population_gen_0.pkl").read_bytes()
+    coev.stitch_individuals(root, workers, 1, 1, [])
+    assert (target / "initial_population_gen_0.pkl").read_bytes() == before

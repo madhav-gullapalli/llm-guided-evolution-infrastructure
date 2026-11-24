@@ -10,6 +10,7 @@ import json
 import pickle
 import random
 import shlex
+import shutil
 import time
 import uuid
 from contextlib import contextmanager
@@ -260,6 +261,60 @@ def save_intermediate(root, workers, generation, attempt, phase, match_state=Non
     save_pickle(path, data)
 
 
+def stitch_individuals(root, workers, generation, attempt, pairings):
+    """Export generation-zero candidates without changing the live populations.
+
+    The coordinator's initial batch is numbered 1. The export is an initial
+    population archive, not a completed evaluation/selection checkpoint.
+    Pairings are the same pairs scheduled for the first evaluation batch.
+    """
+    if not (config.SEPARATE_POPULATIONS
+            and getattr(config, "STITCH_INDIVIDUALS", False)
+            and generation == 1 and attempt == 1):
+        return
+    root = Path(root).resolve()
+    target = root.with_name(root.name + "_stitched")
+    normal_path = root / "initial_population_gen_0.pkl"
+    if normal_path.exists():
+        return  # Never replace the initial batch after a restart.
+    snapshot = {"mode": "coevolution", "generation": 0,
+                "phase": "initial_candidates", "configuration": configuration_snapshot(),
+                "workers": {name: copy.deepcopy(worker.snapshot())
+                            for name, worker in workers.items()},
+                "random_state": random.getstate(), "numpy_state": np.random.get_state()}
+    # Copy the run's other artifacts, including worker sources and job data.
+    shutil.copytree(root, target, dirs_exist_ok=True)
+    stitched = copy.deepcopy(snapshot)
+    stitched["source_workers"] = stitched.pop("workers")
+    paired = copy.deepcopy(snapshot["workers"]["surrogate"])
+    paired.update(population=[], parents=[], elites=[], successful=[],
+                  individual_metrics={}, seen_source_hashes=set())
+    variants = target / "paired" / "variants"
+    variants.mkdir(parents=True, exist_ok=True)
+    paired["state"]["VARIANT_DIR"] = str(variants)
+    paired["state"]["OUTPUT_DIR"] = str(target / "paired" / "jobs")
+    paired["state"]["GLOBAL_DATA"] = {}
+    exports = {symbol: (0 if owner == "surrogate" else 1)
+               for symbol, owner in config.COMPOSITION_EXPORTS.items()}
+    for index, (surrogate, usage) in enumerate(pairings):
+        gene = f"stitched_g0_{index}"
+        sources = []
+        for name, source_id in (("surrogate", surrogate), ("usage", usage)):
+            source = workers[name].source(source_id).resolve()
+            sources.append(target / source.relative_to(root))
+        output = compose_sources(sources, exports, variants / f"{legacy.MODEL}_{gene}.py")
+        paired["population"].append(legacy.creator.Individual([gene]))
+        paired["seen_source_hashes"].add(hashlib.sha256(output.read_bytes()).hexdigest())
+        paired["state"]["GLOBAL_DATA"][gene] = {
+            "source_ids": {"surrogate": surrogate, "usage": usage},
+            "status": "stitched", "fitness": None}
+    stitched["workers"] = {"paired": paired}
+    stitched["configuration"]["experiment"]["SEPARATE_POPULATIONS"] = False
+    stitched["configuration"]["paired_population"] = copy.deepcopy(config.PAIRED_POPULATION)
+    save_pickle(target / normal_path.name, stitched)
+    save_pickle(normal_path, snapshot)
+
+
 def evaluate_matches(workers, pairings, generation, attempt, root):
     """Compose and submit through the unchanged legacy evaluation path."""
     pair_fitness = fitness_type("paired", config.PAIRED_METRICS)
@@ -474,6 +529,7 @@ def run(checkpoints):
             else:
                 pairs = random_uniform_coverage(candidate_ids["surrogate"], candidate_ids["usage"],
                                                 config.matches, config.kappa)
+            stitch_individuals(root, workers, generation, attempt, pairs)
             print(f"Scheduling {len(pairs)} distinct matches", flush=True)
             if config.SEPARATE_POPULATIONS and distinct_mode():
                 evaluate_individuals(workers, generation, attempt, root)
@@ -525,10 +581,21 @@ def run(checkpoints):
                                    "mode": "coevolution", "configuration": configuration_snapshot(),
                                    "workers": {name: worker.snapshot() for name, worker in workers.items()},
                                    "random_state": random.getstate(), "numpy_state": np.random.get_state(),
+                                   # Embed all attempted evaluations, including failures;
+                                   # do not depend on external JSON files for analysis.
+                                   "evaluation_results": load_generation_results(root, generation),
                                    "history": str(report_path),
                                })
         pending_path.unlink(missing_ok=True)
     print("-- End of Era --")
+
+
+def load_generation_results(root, generation):
+    """Return all archived job data for this generation, including raw repeats."""
+    path = Path(root) / "global_data" / f"global_gen_{generation}.pkl"
+    with path.open("rb") as file:
+        data = pickle.load(file)
+    return copy.deepcopy(data["GLOBAL_DATA"])
 
 
 def configuration_compatible(saved):
