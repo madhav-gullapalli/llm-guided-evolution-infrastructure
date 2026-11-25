@@ -23,3 +23,6 @@ ACC_MEAN_YLIM = (60.0, 74.0)
 
 # Fraction reaching within 1% of opt
 REACH_FRAC_YLIM = (-0.05, 1.05)
+
+# Anytime validation regret (opt − best-so-far) on CIFAR-100 NB201
+REGRET_YLIM = (0.0, 8.0)

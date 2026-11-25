@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.cfg.constants_surrogate import (
     MODEL as DEFAULT_MODEL_MODULE,
+    PAIRED_METRICS,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
     SURROGATE_RESULTS_DIR,
@@ -44,10 +45,13 @@ parser.add_argument('--seed', type=int, default=242, help='Random seed for repro
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default=None, help='Override the surrogate family defined in the model module')
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
-parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=True)
+parser.add_argument('--debug', action='store_true', help='stores trajectory_log/candidate_log plots (off by default; coev already persists logs)')
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
+parser.add_argument("--metric-options", default="{}")
+parser.add_argument("--usage_individual", action="store_true", help="Evaluate usage with a perfect surrogate")
+parser.add_argument("--surrogate_individual", action="store_true", help="Evaluate a surrogate without a usage optimizer")
 parser.add_argument(
     '--num_init',
     type=int,
@@ -58,7 +62,7 @@ parser.add_argument("--coevolution", action="store_true", help="Keep the paired 
 parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene id for analysis logs')
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
-_coevolution = custom_args.coevolution
+_coevolution = custom_args.coevolution or custom_args.usage_individual
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -95,8 +99,11 @@ if str(_script_dir) not in sys.path:
 sys.path.append(_variant_dir)
 try:
     _model_module = importlib.import_module(args.model)
-    surrogate_config = _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH)
+    surrogate_config = ({"name": "oracle"} if args.usage_individual else
+                        _model_module.get_surrogate_config(corpus_path=SURROGATE_CORPUS_PATH))
 except Exception as exc:
+    if args.surrogate_individual or args.usage_individual:
+        raise
     # Keep the evolution run moving when a generated variant is malformed.
     # The explicit log prevents this fallback from being mistaken for a
     # successful evaluation of the generated source.
@@ -326,6 +333,8 @@ def log_surrogate_test_metrics(self, epoch):
     
     # Calculate Kendall Tau (Ranking Correlation)
     tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
+    self.paired_targets = list(self.test_accuracies)
+    self.paired_predictions = list(mean_pred_scores)
     
     # Calculate MSE (Mean Squared Error)
     mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
@@ -492,6 +501,53 @@ NasBench201SearchSpace.get_op_indices = safe_get_op_indices
 print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 
+if args.usage_individual:
+    from naslib.search_spaces.core.query_metrics import Metric
+    from sota.Surrogate.usage_evaluation import evaluate_usage
+    from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
+
+    utils.set_seed(SAMPLE_SEED)
+    usage_metrics = evaluate_usage(
+        lambda predictor_factory: _model_module.SurrogateUsageOptimizer(
+            config, predictor_cls=predictor_factory, predictor_kwargs={}),
+        NasBench201SearchSpace, Metric.VAL_ACCURACY, config.dataset, dataset_api,
+        budget=SEARCH_BUDGET,
+    )
+    os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
+    result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
+    result_path.with_suffix(".json").write_text(json.dumps(usage_metrics, indent=2) + "\n")
+    result_path.write_text(f"{usage_metrics['real_evaluations']},{usage_metrics['surrogate_predictions']}")
+    print("job done")
+    raise SystemExit(0)
+
+
+if args.surrogate_individual:
+    from naslib.search_spaces.core.query_metrics import Metric
+    from sota.Surrogate.surrogate_evaluation import evaluate_surrogate, SAMPLE_SEED
+
+    # Both fitting and held-out measurements are independent of search policy.
+    utils.set_seed(SAMPLE_SEED)
+    predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
+
+    def independent_architecture(spec):
+        arch = NasBench201SearchSpace()
+        arch.set_op_indices(list(spec))
+        return arch
+
+    individual_metrics = evaluate_surrogate(
+        lambda: LLM_NB201_Predictor(**predictor_kwargs),
+        independent_architecture,
+        lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
+        **json.loads(args.metric_options),
+    )
+    os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
+    result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
+    result_path.with_suffix(".json").write_text(json.dumps(individual_metrics, indent=2) + "\n")
+    result_path.write_text(f"{individual_metrics['kendall_tau']},{individual_metrics['mse']}")
+    print("job done")
+    raise SystemExit(0)
+
+
 search_results = {}
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
@@ -521,8 +577,9 @@ for i in range(NUM_TRIALS):
             # Keep the existing evaluator metrics/logging contract while the
             # generated usage class owns the search implementation.
             if _coevolution:
-                from coev_evaluation import observe_usage_optimizer
+                from coev_evaluation import enable_query_logging, observe_usage_optimizer
                 observe_usage_optimizer(optimizer)
+                enable_query_logging(optimizer)
             else:
                 optimizer.new_epoch = types.MethodType(debug_new_epoch, optimizer)
         elif optimizer_name == "npenas":
@@ -551,14 +608,17 @@ for i in range(NUM_TRIALS):
         trainer = Trainer(optimizer, config, lightweight_output=True)
         trainer.search() 
         if _coevolution and p_name == "LLM_NB201_Predictor":
+            search_results["optimizer"] = optimizer
+            search_results["trajectory"] = list(trainer.search_trajectory.valid_acc)
             search_results["best_accuracy"] = best_search_accuracy(
                 trainer.search_trajectory.valid_acc)
 
 
         # Access the optimizer instance from the trainer
         optimizer = trainer.optimizer
-        #save trajectory if available
-        if hasattr(optimizer, "trajectory") and DEBUG:
+        # Persist query logs for offline diversity (always for coev; DEBUG for solo).
+        save_query_logs = DEBUG or _coevolution
+        if hasattr(optimizer, "trajectory") and save_query_logs:
             trajectory_path = os.path.join(
                 config.save,
                 f"trajectory_trial_{i}_seed_{config.search.seed}.json"
@@ -568,59 +628,34 @@ for i in range(NUM_TRIALS):
             print(f"Trajectory saved to {trajectory_path}")
         else:
             print("No trajectory found on optimizer.")
-        if hasattr(optimizer, "candidate_log") and DEBUG:
+        if hasattr(optimizer, "candidate_log") and save_query_logs:
             candidate_path = os.path.join(
                 config.save,
                 f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
             )
-            
             with open(candidate_path, "w") as f:
                 json.dump(optimizer.candidate_log, f, indent=2)
-            surrogate_data_plots(config.save, sel = False)
-            surrogate_data_plots(config.save, sel = True)
             print(f"Candidate log saved to {candidate_path}")
+            # Optional viz must never block fitness; candidate_log often has None predictions.
+            if DEBUG:
+                try:
+                    surrogate_data_plots(config.save, sel=False)
+                    surrogate_data_plots(config.save, sel=True)
+                except Exception as exc:
+                    print(f"[Evaluator] Skipping surrogate_data_plots after error: {exc}")
         else:
             print("No candidate_log found on optimizer.")
 
-        analysis_records = []
-        if hasattr(optimizer, "test_prediction_log"):
-            analysis_records.extend(optimizer.test_prediction_log)
-        if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
-            analysis_records.extend(
-                records_from_candidate_log(
-                    optimizer.candidate_log,
-                    gene_id=gene_id,
-                    parent_gene=args.parent_gene,
-                    outer_generation=args.outer_generation,
-                    seed=config.search.seed,
-                    trial=i,
-                )
-            )
-        if analysis_records:
-            analysis_dir = os.path.join(config.save, "analysis")
-            analysis_paths = write_prediction_analysis(
-                analysis_records,
-                analysis_dir,
-                stem=f"predictions_trial_{i}_seed_{config.search.seed}",
-                title=f"{gene_id} trial {i} seed {config.search.seed}",
-            )
-            print(
-                f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
-            )
-            print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
-        else:
-            print("No prediction records found for analysis table.")
-        # Retrieve the stored metrics
+        # Persist surrogate metrics JSON before optional analysis/plots so fitness
+        # can still be written if downstream viz fails.
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics_tau = optimizer.surrogate_test_metrics
             metrics_mse = optimizer.surrogate_test_metrics_mse if hasattr(optimizer, 'surrogate_test_metrics_mse') else []
             epochs = list(range(len(metrics_tau)))
 
-            # Save metrics to JSON file for later analysis
-            # Create a unique experiment identifier
             predictor_type = p_name if p_name != "LLM_NB201_Predictor" else f"LLM_{predictor_kwargs['base_predictor_cls'].__name__}"
             experiment_id = f"{predictor_type}_{optimizer_name}"
-            
+
             metrics_data = {
                 'experiment_id': experiment_id,
                 'optimizer_type': optimizer_name,
@@ -636,44 +671,75 @@ for i in range(NUM_TRIALS):
                 'mse': metrics_mse,
                 'config_str': config.optimizer
             }
-            
+
             metrics_path = os.path.join(config.save, f"surrogate_metrics_trial_{i}_seed_{config.search.seed}.json")
             with open(metrics_path, 'w') as f:
                 json.dump(metrics_data, f, indent=2)
             print(f"Surrogate metrics saved to {metrics_path}")
+        else:
+            metrics_tau = []
+            metrics_mse = []
+            epochs = []
 
-            # Plot individual trial with dual panels
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-            
-            # Plot Kendall Tau
-            ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
-            ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
-            ax1.set_xlabel('Search Iterations (Model Updates)')
-            ax1.set_ylabel('Kendall Tau')
-            ax1.grid(True)
-            ax1.legend()
-            
-            # Plot MSE (if available)
-            if metrics_mse:
-                ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
-                ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
-                ax2.set_xlabel('Search Iterations (Model Updates)')
-                ax2.set_ylabel('MSE')
-                ax2.grid(True)
-                ax2.legend()
+        try:
+            analysis_records = []
+            if hasattr(optimizer, "test_prediction_log"):
+                analysis_records.extend(optimizer.test_prediction_log)
+            if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
+                analysis_records.extend(
+                    records_from_candidate_log(
+                        optimizer.candidate_log,
+                        gene_id=gene_id,
+                        parent_gene=args.parent_gene,
+                        outer_generation=args.outer_generation,
+                        seed=config.search.seed,
+                        trial=i,
+                    )
+                )
+            if analysis_records:
+                analysis_dir = os.path.join(config.save, "analysis")
+                analysis_paths = write_prediction_analysis(
+                    analysis_records,
+                    analysis_dir,
+                    stem=f"predictions_trial_{i}_seed_{config.search.seed}",
+                    title=f"{gene_id} trial {i} seed {config.search.seed}",
+                )
+                print(
+                    f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
+                )
+                print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
             else:
-                ax2.text(0.5, 0.5, 'MSE data not available', 
-                        ha='center', va='center', transform=ax2.transAxes)
-            
-            plt.tight_layout()
-            
-            # Save the plot
-            plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
-            plt.savefig(plot_path)
-            print(f"Surrogate metrics plot saved to {plot_path}")
-            plt.close()
-    
+                print("No prediction records found for analysis table.")
+
+            if metrics_tau:
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+                ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
+                ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
+                ax1.set_xlabel('Search Iterations (Model Updates)')
+                ax1.set_ylabel('Kendall Tau')
+                ax1.grid(True)
+                ax1.legend()
+                if metrics_mse:
+                    ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
+                    ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
+                    ax2.set_xlabel('Search Iterations (Model Updates)')
+                    ax2.set_ylabel('MSE')
+                    ax2.grid(True)
+                    ax2.legend()
+                else:
+                    ax2.text(0.5, 0.5, 'MSE data not available',
+                             ha='center', va='center', transform=ax2.transAxes)
+                plt.tight_layout()
+                plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
+                plt.savefig(plot_path)
+                print(f"Surrogate metrics plot saved to {plot_path}")
+                plt.close()
+        except Exception as exc:
+            print(f"[Evaluator] Post-search analysis/plots failed (fitness unaffected): {exc}")
+
+        if metrics_tau:
             return trainer.optimizer.history
+        return None
 
 
 # ----------------------------
@@ -721,23 +787,24 @@ if not RUN_BASELINES or RUN_ALL:
         final_precision_top10 = 0.0
 
     # Write LLM-GE results file.
-    # Coevolution: tau,best_accuracy (primary team fitness).
+    # Coevolution: the configured paired metrics, in configuration order.
     # Solo: tau,precision_top10,mse — run_improved picks (tau,mse) by default or
     # (tau,precision) when LLMGE_FITNESS_MODE=precision (archive only).
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     filename = os.path.abspath(os.path.join(SURROGATE_RESULTS_DIR, f'{gene_id}_results.txt'))
     with open(filename, 'w') as _f:
         if _coevolution:
-            # Paired coevolution fitness: (kendall_tau, best_validation_accuracy).
-            second_objective = search_results["best_accuracy"]
-            _f.write(f"{final_kendall_tau},{second_objective}")
+            from src.experiment_metrics import paired_values
+            values = paired_values(PAIRED_METRICS, final_kendall_tau,
+                                   search_results, search_results["optimizer"], dataset_api, config.dataset)
+            _f.write(",".join(map(str, values)))
         else:
             _f.write(f"{final_kendall_tau},{final_precision_top10},{final_mse}")
 
     print(f"Results written to {filename}")
     print(f"  Kendall Tau:       {final_kendall_tau:.4f}")
     if _coevolution:
-        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {second_objective:.6f}")
+        print(f"  Best validation accuracy in {SEARCH_BUDGET} search steps: {search_results['best_accuracy']:.6f}")
     else:
         print(f"  Precision@top-10%: {final_precision_top10:.4f}")
         print(f"  MSE:               {final_mse:.6f}")
