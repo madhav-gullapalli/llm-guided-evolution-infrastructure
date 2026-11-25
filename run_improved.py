@@ -756,6 +756,11 @@ def update_individual(ind, new_gene_id, old_gene_id=None, process_success=True, 
     """
     operation = 'Mutated' if process_type == 'Mutation' else 'Mated'
 
+    if process_success and not os.path.isfile(
+            os.path.join(VARIANT_DIR, f'{MODEL}_{new_gene_id}.py')):
+        print(f'\t☠ Missing output for {process_type}: {new_gene_id}', flush=True)
+        process_success = False
+
     if process_success:
         ind[0] = new_gene_id
         ind = creator.Individual([new_gene_id])
@@ -783,7 +788,8 @@ def delayed_mate_check(offspring):
                 new_gene_id, job_id = k, GLOBAL_DATA[k]["job_id"]
                 print(f'Delayed Mating Check: {new_gene_id}, LLM Job ID: {job_id}')
                 print(f'\t‣ Checking for Crossover Job Completion: {job_id} for {new_gene_id}')
-                job_done = check4job_completion(job_id, extension="evolution/")
+                job_done = (successful_sub_flag and
+                            check4job_completion(job_id, extension="evolution/"))
 
                 if job_done:
                     print(f'\t‣ Model Files for {new_gene_id} are Loaded', flush=True) 
@@ -791,12 +797,8 @@ def delayed_mate_check(offspring):
                     print(f'\t‣ Error Loading Model Files for {new_gene_id}!!', flush=True)
 
                 failed_process = not (successful_sub_flag and job_done)
-                if failed_process:
-                    new_gene_id = LINKED_GENES[k]
-                    old_gene_id = k
-                else:
-                    new_gene_id = k
-                    old_gene_id = LINKED_GENES[k]
+                new_gene_id = k
+                old_gene_id = LINKED_GENES[k]
                 offspring[i] = update_individual(individual, new_gene_id, old_gene_id=old_gene_id, 
                                                  process_success=not failed_process, process_type='Mating')
 
@@ -837,21 +839,15 @@ def delayed_mutate_check(offspring):
             if k in GLOBAL_DATA and GLOBAL_DATA[k]["status"] == "DELAYED_CHECK":
                 GLOBAL_DATA[k]["status"]="subbed file"
                 successful_sub_flag = GLOBAL_DATA[k]["sub_flag"]
-                if successful_sub_flag:
-                    new_gene_id = k
-                    job_id = GLOBAL_DATA[k]["job_id"]
-                    print(f'Delayed Mutation Check: {new_gene_id}, LLM Job ID: {job_id}', flush=True)
-                    print(f'\t‣ Checking for Creation Job Completion: {job_id} for {new_gene_id}')
-                    job_done = check4job_completion(job_id, extension="evolution/")
-                    if job_done:
-                        print(f'\t‣ Model Files for {new_gene_id} are Loaded') 
-                    else: 
-                        print(f'\t☠ Error Loading Model Files for {new_gene_id}')
-
-                    failed_process = not (successful_sub_flag and job_done)
-                    old_gene_id = LINKED_GENES[k]
-                    offspring[i] = update_individual(individual, new_gene_id, old_gene_id=old_gene_id,
-                                                     process_success=not failed_process, process_type='Mutation')
+                new_gene_id = k
+                job_id = GLOBAL_DATA[k]["job_id"]
+                print(f'Delayed Mutation Check: {new_gene_id}, LLM Job ID: {job_id}', flush=True)
+                job_done = (successful_sub_flag and
+                            check4job_completion(job_id, extension="evolution/"))
+                old_gene_id = LINKED_GENES[k]
+                offspring[i] = update_individual(
+                    individual, new_gene_id, old_gene_id=old_gene_id,
+                    process_success=bool(job_done), process_type='Mutation')
                   
     return offspring
 
