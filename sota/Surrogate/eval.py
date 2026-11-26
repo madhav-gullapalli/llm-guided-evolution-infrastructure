@@ -21,13 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.cfg.constants_surrogate import (
-<<<<<<< HEAD
-    MODEL,
     numEvols,
     METRIC_AGGREGATION,
-=======
     MODEL as DEFAULT_MODEL_MODULE,
->>>>>>> origin/analysis
     PAIRED_METRICS,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
@@ -74,7 +70,6 @@ parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene i
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
 _coevolution = custom_args.coevolution or custom_args.usage_individual
-<<<<<<< HEAD
 
 from src.repeated_evaluation import repeat_evaluation, validate_num_evols
 validate_num_evols(custom_args.numEvols)
@@ -97,8 +92,6 @@ if not custom_args.single_evaluation:
     print('job done')
     raise SystemExit(0)
 
-=======
->>>>>>> origin/analysis
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -543,11 +536,7 @@ if args.usage_individual:
     from sota.Surrogate.usage_evaluation import evaluate_usage
     from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
 
-<<<<<<< HEAD
     utils.set_seed(args.seed)
-=======
-    utils.set_seed(SAMPLE_SEED)
->>>>>>> origin/analysis
     usage_metrics = evaluate_usage(
         lambda predictor_factory: _model_module.SurrogateUsageOptimizer(
             config, predictor_cls=predictor_factory, predictor_kwargs={}),
@@ -567,11 +556,7 @@ if args.surrogate_individual:
     from sota.Surrogate.surrogate_evaluation import evaluate_surrogate, SAMPLE_SEED
 
     # Both fitting and held-out measurements are independent of search policy.
-<<<<<<< HEAD
     utils.set_seed(args.seed)
-=======
-    utils.set_seed(SAMPLE_SEED)
->>>>>>> origin/analysis
     predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
 
     def independent_architecture(spec):
@@ -583,11 +568,7 @@ if args.surrogate_individual:
         lambda: LLM_NB201_Predictor(**predictor_kwargs),
         independent_architecture,
         lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
-<<<<<<< HEAD
         **{**json.loads(args.metric_options), "seed": args.seed},
-=======
-        **json.loads(args.metric_options),
->>>>>>> origin/analysis
     )
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
