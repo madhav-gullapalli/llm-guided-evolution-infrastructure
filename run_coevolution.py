@@ -437,6 +437,16 @@ def evaluate_individuals(workers, generation, attempt, root, population="surroga
     return worker.individual_metrics
 
 
+def resolve_run_directory(checkpoints):
+    """Prefer the joint archive over its separate-population source."""
+    root = Path(checkpoints).resolve()
+    if not config.SEPARATE_POPULATIONS and not root.name.endswith("_stitched"):
+        stitched = root.with_name(root.name + "_stitched")
+        if stitched.is_dir():
+            return stitched
+    return root
+
+
 def run(checkpoints):
     validate_config(config)
     populations = (config.POPULATIONS if config.SEPARATE_POPULATIONS
@@ -458,12 +468,19 @@ def run(checkpoints):
     if any(not 1 <= settings["num_elites"] < settings["start_population_size"]
            for settings in populations.values()):
         raise ValueError("Infeasible population: starting population must exceed the elite minimum")
-    root = Path(checkpoints).resolve()
+    root = resolve_run_directory(checkpoints)
     root.mkdir(parents=True, exist_ok=True)
     workers = {name: PopulationWorker(name, settings, root)
                for name, settings in populations.items()}
     checkpoint, start, _ = legacy.load_checkpoint(folder_name=str(root), global_path=str(root))
     start = start if checkpoint else 1
+    initial_population = False
+    initial_path = root / "initial_population_gen_0.pkl"
+    if not checkpoint and initial_path.exists():
+        with initial_path.open("rb") as file:
+            checkpoint = pickle.load(file)
+        initial_population = True
+        print(f"Loaded initial population from {initial_path}", flush=True)
     if checkpoint:
         if checkpoint.get("mode") != "coevolution":
             raise ValueError("Use a separate checkpoint directory for coevolution")
@@ -492,6 +509,8 @@ def run(checkpoints):
     stop = (legacy.num_generations if legacy.migration_gen == 0 else
             ((start + legacy.migration_gen - 1) // legacy.migration_gen) * legacy.migration_gen + 1)
     for generation in range(start, stop):
+        use_initial_population = initial_population and generation == 1 and pending is None
+        initial_population = False
         attempt = pending["attempt"] if pending else 0
         accumulated_records = pending["records"] if pending else []
         if not pending:
@@ -503,8 +522,11 @@ def run(checkpoints):
             candidate_ids = {}
             for name, worker in workers.items():
                 try:
-                    candidate_ids[name] = [ind[0] for ind in worker.candidates(
-                        generation, regenerate=attempt > 1)]
+                    if use_initial_population and attempt == 1:
+                        candidate_ids[name] = [ind[0] for ind in worker.population]
+                    else:
+                        candidate_ids[name] = [ind[0] for ind in worker.candidates(
+                            generation, regenerate=attempt > 1)]
                 finally:
                     save_intermediate(root, workers, generation, attempt, f"candidates_{name}")
             counts = {name: len(ids) for name, ids in candidate_ids.items()}

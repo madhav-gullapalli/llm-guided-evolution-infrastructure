@@ -14,14 +14,6 @@ echo "Started on `/bin/hostname`"
 module load cuda
 
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
-# Bash defaults; braces doubled for Python str.format.
-# Default BOTH = paired coevolution (τ + best individual). Archive Precision solo:
-# LLMGE_EVOLUTION_MODE=SURROGATE LLMGE_FITNESS_MODE=precision
-export LLMGE_EVOLUTION_MODE="${LLMGE_EVOLUTION_MODE:-BOTH}"
-export LLMGE_PORT="${LLMGE_PORT:-18631}"
-export LLMGE_HOSTNAME_FILE="${LLMGE_HOSTNAME_FILE:-hostname.log}"
-export LLMGE_SEARCH_SEED="${LLMGE_SEARCH_SEED:-242}"
-export LLMGE_FITNESS_MODE="${LLMGE_FITNESS_MODE:-mse}"
 
 # Run Python script
-uv run python run_improved.py --checkpoints surrogate_mse_seed1_run/island_llama3_naslib-efficiency --global_path surrogate_mse_seed1_run/global_data --llm_model llama3 --prompt_group naslib/efficiency
+uv run python run_coevolution.py --checkpoints /home/hice1/mgullapalli6/scratch/llm-guided-evolution-infrastructure/titanic_islands_run

@@ -745,3 +745,40 @@ def test_initial_stitched_export(local_jobs, tmp_path, monkeypatch):
     before = (target / "initial_population_gen_0.pkl").read_bytes()
     coev.stitch_individuals(root, workers, 1, 1, [])
     assert (target / "initial_population_gen_0.pkl").read_bytes() == before
+
+
+def test_joint_reload_prefers_stitched(local_jobs, tmp_path, monkeypatch):
+    coev, _, _ = local_jobs
+    root = tmp_path / "normal"
+    stitched = tmp_path / "normal_stitched"
+    root.mkdir()
+    stitched.mkdir()
+    assert coev.resolve_run_directory(root) == root
+    monkeypatch.setattr(coev.config, "SEPARATE_POPULATIONS", False)
+    assert coev.resolve_run_directory(root) == stitched
+    assert coev.resolve_run_directory(stitched) == stitched
+
+
+def test_stitched_initial_population_is_evaluated_without_regeneration(local_jobs, tmp_path, monkeypatch):
+    coev, _, _ = local_jobs
+    monkeypatch.setattr(coev.config, "STITCH_INDIVIDUALS", True)
+    root = tmp_path / "normal"
+    workers = {name: coev.PopulationWorker(name, settings, root)
+               for name, settings in coev.config.POPULATIONS.items()}
+    for name, worker in workers.items():
+        gene = name + "_initial"
+        worker.source(gene).write_bytes(Path(worker.state["SEED_NETWORK"]).read_bytes())
+        worker.population = [coev.legacy.creator.Individual([gene])]
+    coev.stitch_individuals(root, workers, 1, 1,
+                           [("surrogate_initial", "usage_initial")])
+    monkeypatch.setattr(coev.config, "SEPARATE_POPULATIONS", False)
+    def no_regeneration(*args, **kwargs):
+        pytest.fail("Initial stitched candidates must not be regenerated")
+    monkeypatch.setattr(coev.PopulationWorker, "candidates", no_regeneration)
+    # Stop after candidate loading, before submitting any evaluations.
+    def inspect_candidates(workers, pairs, generation, attempt, root):
+        assert [ind[0] for ind in workers["paired"].population] == ["stitched_g0_0"]
+        raise RuntimeError("verified initial candidates")
+    monkeypatch.setattr(coev, "evaluate_matches", inspect_candidates)
+    with pytest.raises(RuntimeError, match="verified initial candidates"):
+        coev.run(root)

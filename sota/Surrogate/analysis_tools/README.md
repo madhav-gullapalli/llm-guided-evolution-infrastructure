@@ -7,22 +7,53 @@ Scripts live here so `tmp/cole_analysis_scripts/` stays a staging reference.
 these tools remain for diagnostics and for summarizing archived Precision / MSE runs.
 
 **Chart normalization:** `axis_limits.py` sets shared defaults (τ **0–0.65**, top-10% τ
-**0–0.45**, CIFAR-100 accuracy **65–74**). Plot scripts use these unless you pass
-`--auto-limits` or explicit `--ylim` / `--xlim`.
+**0–0.45**, CIFAR-100 accuracy **65–74**, validation regret **0–8**). Plot scripts use these
+unless you pass `--auto-limits` or explicit `--ylim` / `--xlim`.
+
+**Meeting scoreboard:** search = anytime validation regret + evals to within 1% of opt
+(NAS-Bench-101 / BANANAS / DE-NAS / COLE); surrogate = Kendall τ / top-10% τ; coevolution =
+assembly pair fitness + barrier / κ (Potter / Wiegand / Panait). Within-1%-of-opt ≠ top-1%
+of the space (CIFAR-100 bars ≈ 72.53% vs ≈ 71.18%).
 
 ## Scripts
 
 | Script | Purpose |
 |---|---|
 | `plot_search_trajectory.py` | Best-so-far NAS accuracy vs #architectures evaluated (`errors.json`) |
+| `search_regret.py` | Shared helpers: optimum, regret curve, evals-to-within-1%-of-opt, top-percentile bar |
+| `plot_search_regret.py` | Anytime validation regret vs #evals (median + best match for a coev run) |
 | `plot_surrogate_metrics.py` | Surrogate Kendall τ / MSE over BANANAS retrain steps |
 | `plot_tsne_clusters.py` | Embedding map + DBSCAN clusters colored by residuals (default `--method pca`; optional `--method tsne`) |
 | `summarize_run.py` | One CSV row per gene for a whole islands run: island, generation, parent, τ/MSE, top-10% τ, Precision@top-10%, parameter-count baseline, best accuracy found by the surrogate-guided picks, evaluations to reach it, evaluations to get within 1% of the best architecture in the search space (COLE's metric) |
-| `summarize_coevolution.py` | Independent-score table from coev `history/*.json` (per-population passing / rank-0) |
+| `summarize_coevolution.py` | Meeting scoreboard + pair objectives + search regret (from objectives and `errors.json`) + query diversity (when logs exist) + barrier/Pareto + re-score + source-vs-parent |
+| `query_diversity.py` | Hamming locality on NB201 `op_indices` from `candidate_log_*` / `trajectory_*` (unique fraction, step Hamming, **pairwise mean Hamming**, dist-to-incumbent); `--gene-dir` or `--run` |
+| `plot_query_diversity.py` | Diversity curves next to validation regret (`--gene-dir`) or by coev generation (`--run`; step + pairwise + unique/local frac + accuracy) |
 | `plot_tau_vs_accuracy.py` | τ vs best / mean accuracy of the surrogate-guided picks, one point per gene, with Kendall/Spearman correlation (reads `summary.csv`) |
 | `plot_tau_trend.py` | Best / median τ and top-10% τ per generation, with the parameter-count baseline as dashed lines (reads `summary.csv`) |
 | `plot_search_outcomes.py` | Reach / evals-to-opt style search outcome plots |
 | `seed_rerun.py` | Re-evaluate a run's top genes with extra BANANAS search seeds (GPU jobs) and report mean ± std per gene |
+
+## Query diversity / locality (from repo root)
+
+Coevolution evals now always write `candidate_log_*.json` and `trajectory_*.json`
+(via `enable_query_logging` in `coev_evaluation.py`). Solo runs still need `--debug`
+for those files. Hamming distance on length-6 `op_indices` is the BANANAS edit-1 locality proxy.
+
+```bash
+UV_CACHE_DIR=$HOME/.cache/uv uv run python sota/Surrogate/analysis_tools/query_diversity.py \
+  --gene-dir sota/Surrogate/run_nb201/xXxBcdUPD7dkWKBm0CTuqipcipE
+
+UV_CACHE_DIR=$HOME/.cache/uv uv run python sota/Surrogate/analysis_tools/plot_query_diversity.py \
+  --gene-dir sota/Surrogate/run_nb201/xXxBcdUPD7dkWKBm0CTuqipcipE
+
+UV_CACHE_DIR=$HOME/.cache/uv uv run python sota/Surrogate/analysis_tools/query_diversity.py \
+  --run surrogate_coevolution_run
+```
+
+**Step vs pairwise:** step Hamming is distance to the previous query (BANANAS locality; spiky).
+Pairwise mean Hamming is average distance among all queried arches in the trajectory (set diversity;
+usually smoother). Interpret with regret: low Hamming + falling regret ⇒ focused exploitation;
+low Hamming + flat regret ⇒ stuck; high Hamming + falling regret ⇒ diverse success.
 
 ## Summarize a run (from repo root)
 

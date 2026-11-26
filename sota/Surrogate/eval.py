@@ -21,9 +21,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.cfg.constants_surrogate import (
+<<<<<<< HEAD
     MODEL,
     numEvols,
     METRIC_AGGREGATION,
+=======
+    MODEL as DEFAULT_MODEL_MODULE,
+>>>>>>> origin/analysis
     PAIRED_METRICS,
     SURROGATE_CORPUS_PATH,
     SURROGATE_DATASET,
@@ -52,7 +56,7 @@ parser.add_argument('--surrogate', type=str, default=None, help='Override the su
 parser.add_argument("--single-evaluation", action="store_true", help=argparse.SUPPRESS)
 parser.add_argument("--numEvols", type=int, default=numEvols, help="Independent seeded evaluations per candidate")
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
-parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=True)
+parser.add_argument('--debug', action='store_true', help='stores trajectory_log/candidate_log plots (off by default; coev already persists logs)')
 parser.add_argument('--model', type=str, default=DEFAULT_MODEL_MODULE, help='Model module name (LLM-GE evolved variant)')
 parser.add_argument('--variant_dir', type=str, default=DEFAULT_VARIANT_DIR, help='Directory where LLM-GE writes model variants')
 parser.add_argument('--epochs', type=int, default=100, help='Number of BANANAS search epochs')
@@ -70,6 +74,7 @@ parser.add_argument('--parent_gene', type=str, default=None, help='Parent gene i
 parser.add_argument('--outer_generation', type=int, default=None, help='LLM-GE generation index for analysis logs')
 custom_args, remaining = parser.parse_known_args()
 _coevolution = custom_args.coevolution or custom_args.usage_individual
+<<<<<<< HEAD
 
 from src.repeated_evaluation import repeat_evaluation, validate_num_evols
 validate_num_evols(custom_args.numEvols)
@@ -92,6 +97,8 @@ if not custom_args.single_evaluation:
     print('job done')
     raise SystemExit(0)
 
+=======
+>>>>>>> origin/analysis
 
 # Update sys.argv to only contain args that NASLib's parser understands
 # NASLib parser accepts --seed, so we keep it
@@ -536,7 +543,11 @@ if args.usage_individual:
     from sota.Surrogate.usage_evaluation import evaluate_usage
     from sota.Surrogate.surrogate_evaluation import SAMPLE_SEED
 
+<<<<<<< HEAD
     utils.set_seed(args.seed)
+=======
+    utils.set_seed(SAMPLE_SEED)
+>>>>>>> origin/analysis
     usage_metrics = evaluate_usage(
         lambda predictor_factory: _model_module.SurrogateUsageOptimizer(
             config, predictor_cls=predictor_factory, predictor_kwargs={}),
@@ -556,7 +567,11 @@ if args.surrogate_individual:
     from sota.Surrogate.surrogate_evaluation import evaluate_surrogate, SAMPLE_SEED
 
     # Both fitting and held-out measurements are independent of search policy.
+<<<<<<< HEAD
     utils.set_seed(args.seed)
+=======
+    utils.set_seed(SAMPLE_SEED)
+>>>>>>> origin/analysis
     predictor_kwargs = _model_module.build_predictor_kwargs(surrogate_config)
 
     def independent_architecture(spec):
@@ -568,7 +583,11 @@ if args.surrogate_individual:
         lambda: LLM_NB201_Predictor(**predictor_kwargs),
         independent_architecture,
         lambda arch: arch.query(Metric.VAL_ACCURACY, config.dataset, dataset_api=dataset_api),
+<<<<<<< HEAD
         **{**json.loads(args.metric_options), "seed": args.seed},
+=======
+        **json.loads(args.metric_options),
+>>>>>>> origin/analysis
     )
     os.makedirs(SURROGATE_RESULTS_DIR, exist_ok=True)
     result_path = Path(SURROGATE_RESULTS_DIR) / f"{gene_id}_results.txt"
@@ -607,8 +626,9 @@ for i in range(NUM_TRIALS):
             # Keep the existing evaluator metrics/logging contract while the
             # generated usage class owns the search implementation.
             if _coevolution:
-                from coev_evaluation import observe_usage_optimizer
+                from coev_evaluation import enable_query_logging, observe_usage_optimizer
                 observe_usage_optimizer(optimizer)
+                enable_query_logging(optimizer)
             else:
                 optimizer.new_epoch = types.MethodType(debug_new_epoch, optimizer)
         elif optimizer_name == "npenas":
@@ -645,8 +665,9 @@ for i in range(NUM_TRIALS):
 
         # Access the optimizer instance from the trainer
         optimizer = trainer.optimizer
-        #save trajectory if available
-        if hasattr(optimizer, "trajectory") and DEBUG:
+        # Persist query logs for offline diversity (always for coev; DEBUG for solo).
+        save_query_logs = DEBUG or _coevolution
+        if hasattr(optimizer, "trajectory") and save_query_logs:
             trajectory_path = os.path.join(
                 config.save,
                 f"trajectory_trial_{i}_seed_{config.search.seed}.json"
@@ -656,59 +677,34 @@ for i in range(NUM_TRIALS):
             print(f"Trajectory saved to {trajectory_path}")
         else:
             print("No trajectory found on optimizer.")
-        if hasattr(optimizer, "candidate_log") and DEBUG:
+        if hasattr(optimizer, "candidate_log") and save_query_logs:
             candidate_path = os.path.join(
                 config.save,
                 f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
             )
-            
             with open(candidate_path, "w") as f:
                 json.dump(optimizer.candidate_log, f, indent=2)
-            surrogate_data_plots(config.save, sel = False)
-            surrogate_data_plots(config.save, sel = True)
             print(f"Candidate log saved to {candidate_path}")
+            # Optional viz must never block fitness; candidate_log often has None predictions.
+            if DEBUG:
+                try:
+                    surrogate_data_plots(config.save, sel=False)
+                    surrogate_data_plots(config.save, sel=True)
+                except Exception as exc:
+                    print(f"[Evaluator] Skipping surrogate_data_plots after error: {exc}")
         else:
             print("No candidate_log found on optimizer.")
 
-        analysis_records = []
-        if hasattr(optimizer, "test_prediction_log"):
-            analysis_records.extend(optimizer.test_prediction_log)
-        if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
-            analysis_records.extend(
-                records_from_candidate_log(
-                    optimizer.candidate_log,
-                    gene_id=gene_id,
-                    parent_gene=args.parent_gene,
-                    outer_generation=args.outer_generation,
-                    seed=config.search.seed,
-                    trial=i,
-                )
-            )
-        if analysis_records:
-            analysis_dir = os.path.join(config.save, "analysis")
-            analysis_paths = write_prediction_analysis(
-                analysis_records,
-                analysis_dir,
-                stem=f"predictions_trial_{i}_seed_{config.search.seed}",
-                title=f"{gene_id} trial {i} seed {config.search.seed}",
-            )
-            print(
-                f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
-            )
-            print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
-        else:
-            print("No prediction records found for analysis table.")
-        # Retrieve the stored metrics
+        # Persist surrogate metrics JSON before optional analysis/plots so fitness
+        # can still be written if downstream viz fails.
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics_tau = optimizer.surrogate_test_metrics
             metrics_mse = optimizer.surrogate_test_metrics_mse if hasattr(optimizer, 'surrogate_test_metrics_mse') else []
             epochs = list(range(len(metrics_tau)))
 
-            # Save metrics to JSON file for later analysis
-            # Create a unique experiment identifier
             predictor_type = p_name if p_name != "LLM_NB201_Predictor" else f"LLM_{predictor_kwargs['base_predictor_cls'].__name__}"
             experiment_id = f"{predictor_type}_{optimizer_name}"
-            
+
             metrics_data = {
                 'experiment_id': experiment_id,
                 'optimizer_type': optimizer_name,
@@ -724,44 +720,75 @@ for i in range(NUM_TRIALS):
                 'mse': metrics_mse,
                 'config_str': config.optimizer
             }
-            
+
             metrics_path = os.path.join(config.save, f"surrogate_metrics_trial_{i}_seed_{config.search.seed}.json")
             with open(metrics_path, 'w') as f:
                 json.dump(metrics_data, f, indent=2)
             print(f"Surrogate metrics saved to {metrics_path}")
+        else:
+            metrics_tau = []
+            metrics_mse = []
+            epochs = []
 
-            # Plot individual trial with dual panels
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-            
-            # Plot Kendall Tau
-            ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
-            ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
-            ax1.set_xlabel('Search Iterations (Model Updates)')
-            ax1.set_ylabel('Kendall Tau')
-            ax1.grid(True)
-            ax1.legend()
-            
-            # Plot MSE (if available)
-            if metrics_mse:
-                ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
-                ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
-                ax2.set_xlabel('Search Iterations (Model Updates)')
-                ax2.set_ylabel('MSE')
-                ax2.grid(True)
-                ax2.legend()
+        try:
+            analysis_records = []
+            if hasattr(optimizer, "test_prediction_log"):
+                analysis_records.extend(optimizer.test_prediction_log)
+            if hasattr(optimizer, "candidate_log") and optimizer.candidate_log:
+                analysis_records.extend(
+                    records_from_candidate_log(
+                        optimizer.candidate_log,
+                        gene_id=gene_id,
+                        parent_gene=args.parent_gene,
+                        outer_generation=args.outer_generation,
+                        seed=config.search.seed,
+                        trial=i,
+                    )
+                )
+            if analysis_records:
+                analysis_dir = os.path.join(config.save, "analysis")
+                analysis_paths = write_prediction_analysis(
+                    analysis_records,
+                    analysis_dir,
+                    stem=f"predictions_trial_{i}_seed_{config.search.seed}",
+                    title=f"{gene_id} trial {i} seed {config.search.seed}",
+                )
+                print(
+                    f"Prediction table ({analysis_paths['n_rows']} rows) saved to {analysis_paths['csv']}"
+                )
+                print(f"Predicted-vs-actual plot saved to {analysis_paths['plot']}")
             else:
-                ax2.text(0.5, 0.5, 'MSE data not available', 
-                        ha='center', va='center', transform=ax2.transAxes)
-            
-            plt.tight_layout()
-            
-            # Save the plot
-            plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
-            plt.savefig(plot_path)
-            print(f"Surrogate metrics plot saved to {plot_path}")
-            plt.close()
-    
+                print("No prediction records found for analysis table.")
+
+            if metrics_tau:
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+                ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
+                ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
+                ax1.set_xlabel('Search Iterations (Model Updates)')
+                ax1.set_ylabel('Kendall Tau')
+                ax1.grid(True)
+                ax1.legend()
+                if metrics_mse:
+                    ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
+                    ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
+                    ax2.set_xlabel('Search Iterations (Model Updates)')
+                    ax2.set_ylabel('MSE')
+                    ax2.grid(True)
+                    ax2.legend()
+                else:
+                    ax2.text(0.5, 0.5, 'MSE data not available',
+                             ha='center', va='center', transform=ax2.transAxes)
+                plt.tight_layout()
+                plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
+                plt.savefig(plot_path)
+                print(f"Surrogate metrics plot saved to {plot_path}")
+                plt.close()
+        except Exception as exc:
+            print(f"[Evaluator] Post-search analysis/plots failed (fitness unaffected): {exc}")
+
+        if metrics_tau:
             return trainer.optimizer.history
+        return None
 
 
 # ----------------------------

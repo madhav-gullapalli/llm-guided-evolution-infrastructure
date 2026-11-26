@@ -18,6 +18,7 @@ from utils.print_utils import *
 
 from typing import Optional
 import requests
+from src.llm_transport import post_generation
 import huggingface_hub
 from huggingface_hub import InferenceClient
 import textwrap
@@ -733,18 +734,12 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
 
     headers = {"Content-Type": "application/json"}
 
-    llm_hostname = get_llm_server_hostname()
-    
-    print(llm_hostname)
-
-    server_url = f"http://{llm_hostname}:{PORT}/generate"
+    resolve_url = lambda: f"http://{get_llm_server_hostname()}:{PORT}/generate"
     # Cap wait so mutation jobs do not hang for hours on a stuck/CPU server.
     request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "2700"))  # seconds
     
     try:
-        response = requests.post(
-            server_url, headers=headers, json=payload, timeout=request_timeout
-        )
+        response = post_generation(resolve_url, payload, request_timeout)
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")
@@ -762,8 +757,8 @@ def submit_mixtral_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=
         return None
 
 def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature=0.2, top_p=0.15, server_url=None, return_gen=False):
-    if server_url is None:
-        server_url = f"http://{get_llm_server_hostname()}:8000/generate"
+    resolve_url = (lambda: server_url) if server_url else (
+        lambda: f"http://{get_llm_server_hostname()}:8000/generate")
     payload = {
         "prompt": prompt,
         "max_new_tokens": max_new_tokens,
@@ -776,9 +771,7 @@ def submit_deepseek_local(prompt, max_new_tokens=LLM_MAX_NEW_TOKENS, temperature
     request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "2700"))
     
     try:
-        response = requests.post(
-            server_url, headers=headers, json=payload, timeout=request_timeout
-        )
+        response = post_generation(resolve_url, payload, request_timeout)
         
         if response.status_code == 200:
             output_txt = response.json().get("generated_text", "No output received.")

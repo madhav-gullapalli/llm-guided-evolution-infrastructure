@@ -268,7 +268,8 @@ def wait_for_llm_server(timeout=3600, check_interval=10):
 
     if not LOCAL_LLM:
         return True
-    if LLM_SERVER_READY:
+    persistent = os.getenv("LLMGE_PERSISTENT") == "1"
+    if LLM_SERVER_READY and not persistent:
         return True
 
     env_timeout = os.getenv("LLM_SERVER_READY_TIMEOUT")
@@ -282,7 +283,7 @@ def wait_for_llm_server(timeout=3600, check_interval=10):
     hostname = None
     last_error = None
 
-    while time.time() - start_time <= timeout:
+    while persistent or time.time() - start_time <= timeout:
         if os.path.exists(HOSTNAME_DIR):
             try:
                 with open(HOSTNAME_DIR, 'r') as file:
@@ -1049,8 +1050,10 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
                 "GLOBAL_DATA_ANCESTRY": GLOBAL_DATA_ANCESTRY
             }
 
-        with open(global_file, 'wb') as file:
+        temporary = global_file + '.tmp'
+        with open(temporary, 'wb') as file:
             pickle.dump(stored_global_data, file)
+        os.replace(temporary, global_file)
         print(f'Global data saved as {global_file}')
 
     if checkpoint_data is None:
@@ -1059,8 +1062,10 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
             "hof": hof, 
         }
     filename = os.path.join(folder_name, f'checkpoint_gen_{gen}.pkl')
-    with open(filename, 'wb') as file:
+    temporary = filename + '.tmp'
+    with open(temporary, 'wb') as file:
         pickle.dump(checkpoint_data, file)
+    os.replace(temporary, filename)
     print(f"Population data saved as {filename}")
 
 GEN_PATTERNS = {
